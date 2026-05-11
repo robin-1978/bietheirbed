@@ -36,6 +36,28 @@ async def async_main(config_path: str | None, verbose: bool) -> int:
     logger = get_logger("main")
     logger.info("PC Assistant starting (config=%s)", config_path or "default")
 
+    providers_needing_key = {"openai", "anthropic"}
+    if cfg.llm_provider in providers_needing_key and not cfg.llm_api_key:
+        try:
+            from rich.console import Console
+            from rich.panel import Panel
+
+            console = Console()
+            console.print(
+                Panel(
+                    f"Provider '{cfg.llm_provider}' requires an API key.\n"
+                    "Please set PC_LLM_API_KEY environment variable\n"
+                    "or add llm_api_key to your config file.",
+                    title="[red]✗ Missing API Key[/red]",
+                    border_style="red",
+                    expand=False,
+                )
+            )
+        except ImportError:
+            print(f"ERROR: Provider '{cfg.llm_provider}' requires an API key.")
+            print("Please set PC_LLM_API_KEY environment variable or add llm_api_key to your config file.")
+        return 1
+
     agent = Agent(config=cfg)
 
     logger.info("Checking LLM server health at %s", cfg.llm_server_url)

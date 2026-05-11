@@ -44,11 +44,13 @@ class TestStreamChunk:
         assert c.finish_reason == "stop"
 
 
-class TestLLMProvider:
-    def test_init(self):
+class TestLLMProviderInit:
+    def test_llamacpp_default(self):
         p = LLMProvider(server_url="http://localhost:8080", model_name="qwen")
         assert p._server_url == "http://localhost:8080"
         assert p._model_name == "qwen"
+        assert p._provider == "llamacpp"
+        assert p._headers == {}
 
     def test_trailing_slash_stripped(self):
         p = LLMProvider(server_url="http://localhost:8080/")
@@ -59,7 +61,47 @@ class TestLLMProvider:
         assert p._server_url == "http://127.0.0.1:8080"
         assert p._timeout == 120.0
         assert p._max_retries == 3
+        assert p._provider == "llamacpp"
+        assert p._headers == {}
 
+    def test_openai_provider(self):
+        p = LLMProvider(provider="openai", api_key="sk-test123", model_name="gpt-4")
+        assert p._server_url == "https://api.openai.com/v1"
+        assert p._headers == {"Authorization": "Bearer sk-test123"}
+        assert p._provider == "openai"
+
+    def test_openai_no_key(self):
+        p = LLMProvider(provider="openai", model_name="gpt-4")
+        assert p._server_url == "https://api.openai.com/v1"
+        assert p._headers == {}
+
+    def test_anthropic_provider(self):
+        p = LLMProvider(provider="anthropic", api_key="sk-ant-test", model_name="claude-3")
+        assert p._server_url == "https://api.anthropic.com"
+        assert p._headers == {"x-api-key": "sk-ant-test", "anthropic-version": "2023-06-01"}
+        assert p._provider == "anthropic"
+
+    def test_anthropic_no_key(self):
+        p = LLMProvider(provider="anthropic", model_name="claude-3")
+        assert p._server_url == "https://api.anthropic.com"
+        assert p._headers == {}
+
+    def test_openai_compatible_with_api_base(self):
+        p = LLMProvider(provider="openai_compatible", api_key="key123", api_base="http://my-server:8000/v1", model_name="local")
+        assert p._server_url == "http://my-server:8000/v1"
+        assert p._headers == {"Authorization": "Bearer key123"}
+
+    def test_openai_compatible_fallback_to_server_url(self):
+        p = LLMProvider(provider="openai_compatible", server_url="http://fallback:8080", model_name="local")
+        assert p._server_url == "http://fallback:8080"
+        assert p._headers == {}
+
+    def test_openai_compatible_api_base_trailing_slash(self):
+        p = LLMProvider(provider="openai_compatible", api_base="http://my-server:8000/v1/", model_name="local")
+        assert p._server_url == "http://my-server:8000/v1"
+
+
+class TestLLMProviderNormalize:
     def test_normalize_tool_calls_string_args(self):
         p = LLMProvider()
         raw = [{"function": {"name": "test", "arguments": '{"key": "value"}'}}]
@@ -95,6 +137,92 @@ class TestLLMProvider:
         assert msg["tool_call_id"] == "call_123"
         assert msg["content"] == "result data"
 
+
+class TestAnthropicAdapter:
+    def test_build_anthropic_payload_system_extraction(self):
+        p = LLMProvider(provider="anthropic", api_key="key", model_name="claude-3")
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "Hello"},
+        ]
+        payload = p._build_anthropic_payload(messages)
+        assert payload["system"] == "You are helpful."
+        assert len(payload["messages"]) == 1
+        assert payload["messages"][0]["role"] == "user"
+
+    def test_build_anthropic_payload_multiple_system(self):
+        p = LLMProvider(provider="anthropic", api_key="key", model_name="claude-3")
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "system", "content": "Be concise."},
+            {"role": "user", "content": "Hello"},
+        ]
+        payload = p._build_anthropic_payload(messages)
+        assert "You are helpful." in payload["system"]
+        assert "Be concise." in payload["system"]
+        assert len(payload["messages"]) == 1
+
+    def test_build_anthropic_payload_with_tools(self):
+        p = LLMProvider(provider="anthropic", api_key="key", model_name="claude-3")
+        tools = [
+            {"type": "function", "function": {"name": "test", "description": "A test tool", "parameters": {"type": "object", "properties": {"x": {"type": "string"}}}}},
+        ]
+        payload = p._build_anthropic_payload([], tools=tools)
+        assert len(payload["tools"]) == 1
+        assert payload["tools"][0]["name"] == "test"
+        assert payload["tools"][0]["input_schema"]["properties"]["x"]["type"] == "string"
+
+    def test_convert_tools_to_anthropic(self):
+        p = LLMProvider(provider="anthropic", api_key="key", model_name="claude-3")
+        tools = [
+            {"type": "function", "function": {"name": "read_file", "description": "Read a file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}},
+        ]
+        result = p._convert_tools_to_anthropic(tools)
+        assert len(result) == 1
+        assert result[0]["name"] == "read_file"
+        assert result[0]["description"] == "Read a file"
+        assert "input_schema" in result[0]
+
+    def test_convert_tools_to_anthropic_default_parameters(self):
+        p = LLMProvider(provider="anthropic", api_key="key", model_name="claude-3")
+        tools = [
+            {"type": "function", "function": {"name": "simple", "description": "No params"}},
+        ]
+        result = p._convert_tools_to_anthropic(tools)
+        assert result[0]["input_schema"] == {"type": "object", "properties": {}}
+
+    def test_parse_anthropic_response_text_only(self):
+        p = LLMProvider(provider="anthropic", api_key="key", model_name="claude-3")
+        data = {
+            "content": [{"type": "text", "text": "Hello world"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+        result = p._parse_anthropic_response(data)
+        assert result.content == "Hello world"
+        assert result.finish_reason == "end_turn"
+        assert result.tool_calls == []
+
+    def test_parse_anthropic_response_with_tool_use(self):
+        p = LLMProvider(provider="anthropic", api_key="key", model_name="claude-3")
+        data = {
+            "content": [
+                {"type": "text", "text": "Let me check."},
+                {"type": "tool_use", "id": "toolu_123", "name": "read_file", "input": {"path": "/tmp/test.txt"}},
+            ],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 20, "output_tokens": 10},
+        }
+        result = p._parse_anthropic_response(data)
+        assert "Let me check." in result.content
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0]["id"] == "toolu_123"
+        assert result.tool_calls[0]["function"]["name"] == "read_file"
+        assert result.tool_calls[0]["function"]["arguments"] == {"path": "/tmp/test.txt"}
+        assert result.finish_reason == "tool_use"
+
+
+class TestLLMProviderChat:
     @pytest.mark.asyncio
     async def test_chat_success(self):
         p = LLMProvider()
@@ -106,15 +234,10 @@ class TestLLMProvider:
         }
         mock_response.raise_for_status = MagicMock()
 
-        with patch.object(httpx.AsyncClient, "__aenter__", return_value=MagicMock()) as mock_enter:
-            mock_client = MagicMock()
-            mock_client.post = AsyncMock(return_value=mock_response)
-            mock_enter.return_value = mock_client
-
-            with patch.object(p, "_request_with_retry", return_value=mock_response):
-                result = await p.chat([{"role": "user", "content": "hi"}])
-                assert result.content == "Hello!"
-                assert result.finish_reason == "stop"
+        with patch.object(p, "_request_with_retry", return_value=mock_response):
+            result = await p.chat([{"role": "user", "content": "hi"}])
+            assert result.content == "Hello!"
+            assert result.finish_reason == "stop"
 
     @pytest.mark.asyncio
     async def test_chat_with_tools(self):
@@ -155,6 +278,69 @@ class TestLLMProvider:
             assert result.finish_reason == "error"
 
     @pytest.mark.asyncio
+    async def test_chat_anthropic_success(self):
+        p = LLMProvider(provider="anthropic", api_key="key", model_name="claude-3")
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "content": [{"type": "text", "text": "Hi from Claude!"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(p, "_request_with_retry", return_value=mock_response):
+            result = await p.chat([{"role": "user", "content": "hi"}])
+            assert result.content == "Hi from Claude!"
+            assert result.finish_reason == "end_turn"
+
+    @pytest.mark.asyncio
+    async def test_chat_anthropic_with_tools(self):
+        p = LLMProvider(provider="anthropic", api_key="key", model_name="claude-3")
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "content": [
+                {"type": "text", "text": "Let me look."},
+                {"type": "tool_use", "id": "toolu_1", "name": "read_file", "input": {"path": "test.txt"}},
+            ],
+            "stop_reason": "tool_use",
+            "usage": {},
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(p, "_request_with_retry", return_value=mock_response):
+            result = await p.chat(
+                [{"role": "user", "content": "read file"}],
+                tools=[{"type": "function", "function": {"name": "read_file", "parameters": {}}}],
+            )
+            assert len(result.tool_calls) == 1
+            assert result.tool_calls[0]["function"]["name"] == "read_file"
+
+    @pytest.mark.asyncio
+    async def test_chat_anthropic_error(self):
+        p = LLMProvider(provider="anthropic", api_key="key", model_name="claude-3")
+        with patch.object(p, "_request_with_retry", side_effect=httpx.ConnectError("Connection refused")):
+            result = await p.chat([{"role": "user", "content": "hi"}])
+            assert result.finish_reason == "error"
+
+    @pytest.mark.asyncio
+    async def test_chat_openai_sends_headers(self):
+        p = LLMProvider(provider="openai", api_key="sk-test", model_name="gpt-4")
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "Hi!"}, "finish_reason": "stop"}],
+            "usage": {},
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(p, "_request_with_retry", return_value=mock_response) as mock_retry:
+            await p.chat([{"role": "user", "content": "hi"}])
+            call_kwargs = mock_retry.call_args
+            assert call_kwargs[1].get("headers") == {"Authorization": "Bearer sk-test"} or \
+                   (len(call_kwargs) > 1 and call_kwargs[1].get("headers") == {"Authorization": "Bearer sk-test"})
+
+
+class TestLLMProviderHealthCheck:
+    @pytest.mark.asyncio
     async def test_health_check_success(self):
         p = LLMProvider()
         mock_resp = MagicMock()
@@ -175,6 +361,25 @@ class TestLLMProvider:
             result = await p.health_check()
             assert result is False
 
+    @pytest.mark.asyncio
+    async def test_health_check_anthropic(self):
+        p = LLMProvider(provider="anthropic", api_key="key", model_name="claude-3")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+
+        with patch.object(httpx.AsyncClient, "__aenter__", return_value=MagicMock()) as mock_enter:
+            mock_client = MagicMock()
+            mock_client.get = AsyncMock(return_value=mock_resp)
+            mock_enter.return_value = mock_client
+
+            result = await p.health_check()
+            assert result is True
+            mock_client.get.assert_called_once()
+            call_args = mock_client.get.call_args
+            assert "anthropic.com" in call_args[0][0]
+
+
+class TestLLMProviderChatStream:
     @pytest.mark.asyncio
     async def test_chat_stream_basic(self):
         p = LLMProvider()
@@ -263,5 +468,45 @@ class TestLLMProvider:
             assert len(chunks) >= 1
             assert chunks[0].finish_reason == "error"
 
+    @pytest.mark.asyncio
+    async def test_chat_stream_anthropic_fallback(self):
+        p = LLMProvider(provider="anthropic", api_key="key", model_name="claude-3")
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "content": [{"type": "text", "text": "Hello from Claude!"}],
+            "stop_reason": "end_turn",
+            "usage": {},
+        }
+        mock_response.raise_for_status = MagicMock()
 
+        with patch.object(p, "_request_with_retry", return_value=mock_response):
+            chunks = []
+            async for chunk in p.chat_stream([{"role": "user", "content": "hi"}]):
+                chunks.append(chunk)
+            assert len(chunks) == 1
+            assert chunks[0].delta_content == "Hello from Claude!"
+            assert chunks[0].finish_reason == "end_turn"
 
+    @pytest.mark.asyncio
+    async def test_chat_stream_anthropic_with_tools(self):
+        p = LLMProvider(provider="anthropic", api_key="key", model_name="claude-3")
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "content": [
+                {"type": "tool_use", "id": "toolu_1", "name": "test", "input": {"x": 1}},
+            ],
+            "stop_reason": "tool_use",
+            "usage": {},
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(p, "_request_with_retry", return_value=mock_response):
+            chunks = []
+            async for chunk in p.chat_stream(
+                [{"role": "user", "content": "do it"}],
+                tools=[{"type": "function", "function": {"name": "test", "parameters": {}}}],
+            ):
+                chunks.append(chunk)
+            assert len(chunks) == 1
+            assert len(chunks[0].delta_tool_calls) == 1
+            assert chunks[0].delta_tool_calls[0]["function"]["name"] == "test"

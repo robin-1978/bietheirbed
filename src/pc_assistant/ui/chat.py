@@ -47,6 +47,7 @@ _COMMANDS_HELP = """\
 /clear          Clear conversation history
 /history        Show conversation history summary
 /tools          List available tools
+/status         Show detailed agent status
 /help           Show this help message
 /config         Show current configuration\
 """
@@ -167,6 +168,21 @@ class ChatUI:
         else:
             print(f"WARNING: {message}")
 
+    def _render_status_bar(self) -> None:
+        if self._agent is None or self._console is None:
+            return
+        status = self._agent.get_status()
+        provider = status.get("provider", "unknown")
+        model = status.get("model", "default")
+        connected = "🟢" if status.get("connected") else "🔴"
+        agent_status = status.get("status", "ready")
+        turns = status.get("conversation_turns", 0)
+        total_tokens = status.get("total_tokens", 0)
+        status_text = f" {connected} {provider} | {model} | {agent_status} | turns: {turns} | tokens: {total_tokens} "
+        self._console.print(
+            Panel(status_text, style="dim", border_style="dim", expand=False)
+        )
+
     def _show_welcome(self) -> None:
         if self._console is not None:
             self._console.print(_WELCOME_ART, style="bold green", highlight=False)
@@ -176,6 +192,7 @@ class ChatUI:
             from pc_assistant import __version__
             print(f"PC Assistant v{__version__}")
             print("Type /help for commands\n")
+        self._render_status_bar()
 
     def _get_input(self) -> str | None:
         if _HAS_RICH_PROMPT and self._console is not None:
@@ -288,6 +305,33 @@ class ChatUI:
                 print(f"  Working Dir: {self._config.working_directory}")
             return True
 
+        if cmd == "/status":
+            if self._agent is None:
+                self._print_warning("No agent initialized yet.")
+                return True
+            status = self._agent.get_status()
+            if self._console is not None:
+                table = Table(title="Agent Status", show_lines=True)
+                table.add_column("Property", style="bold")
+                table.add_column("Value")
+                table.add_row("Provider", status["provider"])
+                table.add_row("Model", status["model"])
+                table.add_row("Connected", "🟢 Yes" if status["connected"] else "🔴 No")
+                table.add_row("Status", status["status"])
+                table.add_row("Platform", status["platform"])
+                table.add_row("Working Dir", status["working_directory"])
+                table.add_row("Conversation Turns", str(status["conversation_turns"]))
+                table.add_row("Total Iterations", str(status["total_iterations"]))
+                table.add_row("Prompt Tokens", str(status["total_prompt_tokens"]))
+                table.add_row("Completion Tokens", str(status["total_completion_tokens"]))
+                table.add_row("Total Tokens", str(status["total_tokens"]))
+                table.add_row("Tools", ", ".join(status["tools"]))
+                self._console.print(table)
+            else:
+                for k, v in status.items():
+                    print(f"  {k}: {v}")
+            return True
+
         self._print_warning(f"Unknown command: {command}")
         return True
 
@@ -328,6 +372,7 @@ class ChatUI:
                     self._spinner.start("Thinking...")
                     spinner_active = True
                     first_content_received = False
+                    self._render_status_bar()
 
                 elif event.type == "think_start":
                     think_start_time = time.time()
@@ -396,6 +441,7 @@ class ChatUI:
                         self._spinner.start(f"Executing {event.tool_name}...")
                         spinner_active = True
                         self._print_tool_call(event.tool_name, event.tool_args)
+                    self._render_status_bar()
 
                 elif event.type == "tool_result":
                     self._spinner.stop()
@@ -417,24 +463,28 @@ class ChatUI:
                             print(f"\n{event.content}\n")
                     elif event.content:
                         print(f"\n{event.content}\n")
+                    self._render_status_bar()
 
                 elif event.type == "error":
                     if spinner_active:
                         self._spinner.stop()
                         spinner_active = False
                     self._print_error(event.content)
+                    self._render_status_bar()
 
                 elif event.type == "iteration_limit":
                     if spinner_active:
                         self._spinner.stop()
                         spinner_active = False
                     self._print_warning(event.content)
+                    self._render_status_bar()
 
                 elif event.type == "cancelled":
                     if spinner_active:
                         self._spinner.stop()
                         spinner_active = False
                     self._print_warning("Operation cancelled by user.")
+                    self._render_status_bar()
 
         except KeyboardInterrupt:
             _cancel_handler()

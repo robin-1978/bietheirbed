@@ -1,0 +1,23 @@
+- [ ] 平台抽象模块 `platform_.py` 实现：`get_platform()` 正确返回当前 OS
+- [ ] `get_shell_command()` 在 Windows 返回 PowerShell 命令，Linux 返回 bash，macOS 返回 zsh
+- [ ] `get_default_dangerous_commands()` 按平台返回不同的危险命令列表
+- [ ] `get_default_protected_paths()` 按平台返回不同的受保护路径列表
+- [ ] Shell 工具在 Windows 使用 PowerShell 执行，在 Linux 使用 bash 执行
+- [ ] 安全规则默认值按平台动态生成，不再硬编码 Windows 路径
+- [ ] 应用控制工具在 macOS 使用 `open` 命令启动应用
+- [ ] 系统提示词包含当前 Shell 类型信息
+- [ ] `AppConfig` 新增 `llm_provider`、`llm_api_key`、`llm_api_base` 字段
+- [ ] LLM Provider 支持 OpenAI API（设置正确的 base_url 和 auth header）
+- [ ] LLM Provider 支持 Anthropic API（适配 tools schema 和 tool_use 格式）
+- [ ] LLM Provider 支持 OpenAI Compatible API（自定义 base_url + 可选 auth）
+- [ ] 需要API Key 的 provider 缺少 Key 时启动报错
+- [ ] Agent 暴露 `get_status()` 方法返回状态字典
+- [ ] Agent 累计统计 Token 用量（prompt_tokens + completion_tokens）
+- [ ] TUI 状态栏显示：Provider | 模型 | 连接状态 | 轮次 | Token | Agent 状态
+- [ ] TUI 状态栏在事件处理后实时更新
+- [ ] `/status` 命令显示详细 Agent 状态信息
+- [ ] `/help` 命令包含 `/status` 说明
+- [ ] `config/default.yaml` 包含新的 LLM 配置字段
+- [ ] 环境变量 `PC_LLM_PROVIDER`、`PC_LLM_API_KEY`、`PC_LLM_API_BASE` 可覆盖配置
+- [ ] 所有单元测试通过
+- [ ] 平台抽象模块在 mock Linux/macOS 下测试通过

@@ -7,31 +7,22 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field
 
+from pc_assistant.platform_ import get_default_dangerous_commands, get_default_protected_paths
+
 
 class AppConfig(BaseModel):
+    llm_provider: str = "llamacpp"
     llm_server_url: str = "http://127.0.0.1:8080"
     llm_model_name: str = ""
+    llm_api_key: str = ""
+    llm_api_base: str = ""
+    llm_temperature: float = 0.7
     max_iterations: int = 8
     max_tokens: int = 1024
     shell_timeout: int = 30
     context_window_budget: int = 4096
-    dangerous_commands: list[str] = Field(
-        default_factory=lambda: [
-            "rm -rf /",
-            "del /s /q C:\\",
-            "format",
-            "shutdown",
-            "mkfs",
-        ]
-    )
-    protected_paths: list[str] = Field(
-        default_factory=lambda: [
-            "/etc/passwd",
-            "/etc/shadow",
-            "C:\\Windows\\System32",
-            "C:\\Windows\\SysWOW64",
-        ]
-    )
+    dangerous_commands: list[str] = Field(default_factory=get_default_dangerous_commands)
+    protected_paths: list[str] = Field(default_factory=get_default_protected_paths)
     log_file: str = "logs/pc_assistant.json"
     working_directory: str = Field(default_factory=os.getcwd)
 
@@ -46,8 +37,12 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 
 def _env_overrides() -> dict[str, Any]:
     mapping: dict[str, tuple[str, type]] = {
+        "PC_LLM_PROVIDER": ("llm_provider", str),
         "PC_LLM_SERVER_URL": ("llm_server_url", str),
         "PC_LLM_MODEL_NAME": ("llm_model_name", str),
+        "PC_LLM_API_KEY": ("llm_api_key", str),
+        "PC_LLM_API_BASE": ("llm_api_base", str),
+        "PC_LLM_TEMPERATURE": ("llm_temperature", float),
         "PC_MAX_ITERATIONS": ("max_iterations", int),
         "PC_SHELL_TIMEOUT": ("shell_timeout", int),
         "PC_CONTEXT_WINDOW_BUDGET": ("context_window_budget", int),

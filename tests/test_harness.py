@@ -11,6 +11,7 @@ from pc_assistant.harness.audit import AuditLogger
 from pc_assistant.harness.limiter import RateLimiter
 from pc_assistant.harness.recovery import RecoveryManager
 from pc_assistant.harness.safety import SafetyChecker, SafetyCheckResult
+from pc_assistant.platform_ import get_default_dangerous_commands
 
 
 class TestSafetyCheckResult:
@@ -31,16 +32,8 @@ class TestSafetyCheckResult:
 class TestSafetyChecker:
     def test_default_dangerous_patterns(self):
         s = SafetyChecker()
-        assert not s.check_command("rm -rf /").allowed
-        assert not s.check_command("format C:").allowed
-        assert not s.check_command("shutdown /s").allowed
-        assert not s.check_command("taskkill /f /pid 123").allowed
-        assert not s.check_command("rd /s C:\\temp").allowed
-        assert not s.check_command("rmdir /s C:\\temp").allowed
-        assert not s.check_command("reg delete HKLM\\Software").allowed
-        assert not s.check_command("net user admin").allowed
-        assert not s.check_command("bcdedit /set").allowed
-        assert not s.check_command("diskpart").allowed
+        for pattern in get_default_dangerous_commands():
+            assert not s.check_command(pattern).allowed
 
     def test_custom_dangerous_commands(self):
         s = SafetyChecker(dangerous_commands=["my_dangerous_cmd"])
@@ -71,7 +64,8 @@ class TestSafetyChecker:
 
     def test_is_blocked_shell(self):
         s = SafetyChecker()
-        result = s.is_blocked("shell", {"command": "rm -rf /"})
+        dangerous_cmd = get_default_dangerous_commands()[0]
+        result = s.is_blocked("shell", {"command": dangerous_cmd})
         assert not result.allowed
 
     def test_is_blocked_shell_safe(self):
@@ -168,7 +162,8 @@ class TestSafetyChecker:
 
     def test_check_tool_call_delegates_to_is_blocked(self):
         s = SafetyChecker()
-        result = s.check_tool_call("shell", {"command": "rm -rf /"})
+        dangerous_cmd = get_default_dangerous_commands()[0]
+        result = s.check_tool_call("shell", {"command": dangerous_cmd})
         assert not result.allowed
 
 

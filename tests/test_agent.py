@@ -7,6 +7,7 @@ import pytest
 from pc_assistant.agent import Agent, AgentEvent, _strip_think_tags
 from pc_assistant.config import AppConfig
 from pc_assistant.llm_provider import LLMResponse, StreamChunk
+from pc_assistant.platform_ import get_default_dangerous_commands
 from pc_assistant.tools.base import ToolBase
 from pc_assistant.tools.registry import ToolRegistry
 from typing import Any
@@ -180,12 +181,13 @@ class TestAgentRun:
     @pytest.mark.asyncio
     async def test_safety_blocked(self):
         agent = Agent(config=AppConfig())
+        dangerous_cmd = get_default_dangerous_commands()[0]
         agent._llm.chat_stream = _make_stream_mock(
             content="Deleting.",
             tool_calls=[{
                 "id": "call_1",
                 "type": "function",
-                "function": {"name": "shell", "arguments": {"command": "rm -rf /"}},
+                "function": {"name": "shell", "arguments": {"command": dangerous_cmd}},
             }],
             finish_reason="tool_calls",
         )
@@ -196,12 +198,13 @@ class TestAgentRun:
     @pytest.mark.asyncio
     async def test_confirm_callback_allows(self):
         agent = Agent(config=AppConfig(), confirm_callback=lambda n, a: True)
+        dangerous_cmd = get_default_dangerous_commands()[0]
         first_stream = _make_stream_mock(
             content="Deleting.",
             tool_calls=[{
                 "id": "call_1",
                 "type": "function",
-                "function": {"name": "shell", "arguments": {"command": "rm -rf /"}},
+                "function": {"name": "shell", "arguments": {"command": dangerous_cmd}},
             }],
             finish_reason="tool_calls",
         )
@@ -224,12 +227,13 @@ class TestAgentRun:
     @pytest.mark.asyncio
     async def test_confirm_callback_denies(self):
         agent = Agent(config=AppConfig(), confirm_callback=lambda n, a: False)
+        dangerous_cmd = get_default_dangerous_commands()[0]
         first_stream = _make_stream_mock(
             content="Deleting.",
             tool_calls=[{
                 "id": "call_1",
                 "type": "function",
-                "function": {"name": "shell", "arguments": {"command": "rm -rf /"}},
+                "function": {"name": "shell", "arguments": {"command": dangerous_cmd}},
             }],
             finish_reason="tool_calls",
         )
@@ -465,5 +469,17 @@ class TestAgentReset:
         agent._conversation.add_user("hello")
         agent.reset_conversation()
         msgs = agent.conversation.get_messages()
-        system_msgs = [m for m in msgs if m["role"] == "system"]
+        assert len(msgs) == 0
+        llm_msgs = agent.conversation.get_messages_for_llm()
+        system_msgs = [m for m in llm_msgs if m["role"] == "system"]
         assert len(system_msgs) >= 1
+
+
+class TestAgentGetStatus:
+    def test_initial_status(self):
+        agent = Agent(config=AppConfig())
+        status = agent.get_status()
+        assert status["status"] == "ready"
+        assert status["provider"] == "llamacpp"
+        assert status["total_tokens"] == 0
+        assert "filesystem" in status["tools"]

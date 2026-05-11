@@ -17,6 +17,7 @@ from pc_assistant.harness.limiter import RateLimiter
 from pc_assistant.harness.safety import SafetyChecker
 from pc_assistant.llm_provider import LLMProvider, LLMResponse
 from pc_assistant.logger import get_logger
+from pc_assistant.platform_ import get_platform
 from pc_assistant.tools.application import ApplicationTool
 from pc_assistant.tools.clipboard import ClipboardTool
 from pc_assistant.tools.filesystem import FilesystemTool
@@ -160,6 +161,9 @@ class Agent:
         self._llm = LLMProvider(
             server_url=self._config.llm_server_url,
             model_name=self._config.llm_model_name,
+            provider=self._config.llm_provider,
+            api_key=self._config.llm_api_key,
+            api_base=self._config.llm_api_base,
         )
         self._conversation = ConversationManager()
         self._registry = ToolRegistry()
@@ -171,11 +175,15 @@ class Agent:
         self._audit = AuditLogger()
         self._confirm_callback = confirm_callback
         self._cancelled = False
+        self._total_prompt_tokens = 0
+        self._total_completion_tokens = 0
+        self._total_iterations = 0
+        self._current_status = "ready"
+        self._connected = False
         self._system_prompt = build_system_prompt(
             working_directory=self._config.working_directory,
         )
-        self._conversation.add("system", self._system_prompt)
-        self._conversation.add("system", _build_date_context())
+        self._conversation.set_system_context(self._system_prompt)
         self._register_builtin_tools()
 
     @property
@@ -189,8 +197,26 @@ class Agent:
     def cancel(self) -> None:
         self._cancelled = True
 
+    def get_status(self) -> dict[str, Any]:
+        return {
+            "provider": self._config.llm_provider,
+            "model": self._config.llm_model_name or "default",
+            "status": self._current_status,
+            "connected": self._connected,
+            "platform": get_platform(),
+            "total_prompt_tokens": self._total_prompt_tokens,
+            "total_completion_tokens": self._total_completion_tokens,
+            "total_tokens": self._total_prompt_tokens + self._total_completion_tokens,
+            "total_iterations": self._total_iterations,
+            "conversation_turns": len([m for m in self._conversation.get_messages() if m["role"] == "user"]),
+            "tools": self._registry.list_tools(),
+            "working_directory": self._config.working_directory,
+        }
+
     async def health_check(self) -> bool:
-        return await self._llm.health_check()
+        result = await self._llm.health_check()
+        self._connected = result
+        return result
 
     def _register_builtin_tools(self) -> None:
         builtin_tools = [
@@ -235,6 +261,7 @@ class Agent:
             return
 
         self._cancelled = False
+        self._current_status = "thinking"
         self._conversation.add_user(user_input)
 
         recent_calls: list[str] = []
@@ -245,10 +272,15 @@ class Agent:
         for iteration in range(self._config.max_iterations):
             if self._cancelled:
                 yield AgentEvent(type="cancelled", content="Operation cancelled by user.", iteration=iteration)
+                self._current_status = "ready"
                 return
 
+            self._current_status = "thinking"
+            self._total_iterations += 1
+
+            messages = self._conversation.get_messages_for_llm()
             messages = truncate_messages(
-                self._conversation.get_messages(),
+                messages,
                 budget=self._config.context_window_budget,
             )
             tools = self._registry.all_schemas() if len(self._registry) > 0 else None
@@ -265,6 +297,7 @@ class Agent:
                 async for chunk in self._llm.chat_stream(messages, tools=tools, max_tokens=self._config.max_tokens):
                     if self._cancelled:
                         yield AgentEvent(type="cancelled", content="Operation cancelled by user.", iteration=iteration)
+                        self._current_status = "ready"
                         return
 
                     if chunk.finish_reason == "error":
@@ -300,6 +333,7 @@ class Agent:
                 stream_had_error = True
 
             if stream_had_error:
+                self._current_status = "ready"
                 return
 
             remaining_events = think_parser.flush()
@@ -328,6 +362,7 @@ class Agent:
                 for tool_call in tool_calls_from_stream:
                     if self._cancelled:
                         yield AgentEvent(type="cancelled", content="Operation cancelled by user.", iteration=iteration)
+                        self._current_status = "ready"
                         return
 
                     func = tool_call.get("function", {})
@@ -358,6 +393,7 @@ class Agent:
                             content=f"Repeated tool call detected ({tool_name}), possible infinite loop. Terminated.",
                             iteration=iteration,
                         )
+                        self._current_status = "ready"
                         return
 
                     recent_calls.append(call_sig)
@@ -418,10 +454,13 @@ class Agent:
                         allowed=True,
                     )
 
+                    self._current_status = f"executing_{tool_name}"
+
                     try:
                         result = await self._registry.execute(tool_name, **arguments)
                         result_str = str(result)
                         self._conversation.add_tool_result(tool_call_id, result_str)
+                        self._current_status = "thinking"
                         yield AgentEvent(
                             type="tool_result",
                             tool_name=tool_name,
@@ -433,6 +472,7 @@ class Agent:
                     except Exception as e:
                         error_msg = f"Error: {e}"
                         self._conversation.add_tool_result(tool_call_id, error_msg)
+                        self._current_status = "thinking"
                         yield AgentEvent(
                             type="tool_result",
                             tool_name=tool_name,
@@ -449,6 +489,7 @@ class Agent:
                         content=clean_content,
                         iteration=iteration,
                     )
+                    self._current_status = "ready"
                     return
 
                 if not clean_content and not full_content:
@@ -460,8 +501,9 @@ class Agent:
                             content="I was unable to generate a response. Please try again.",
                             iteration=iteration,
                         )
+                        self._current_status = "ready"
                         return
-                    self._conversation.add("system", "You did not produce any output. Please respond to the user's question.")
+                    self._conversation.add("user", "[System] You did not produce any output. Please respond to the user's question.")
                     continue
 
                 if not clean_content and full_content:
@@ -473,6 +515,7 @@ class Agent:
                             content="I was unable to generate a visible response. Please try again.",
                             iteration=iteration,
                         )
+                        self._current_status = "ready"
                         return
                     self._conversation.add("user", "Please provide your answer based on your thinking.")
                     continue
@@ -484,6 +527,7 @@ class Agent:
                     content=clean_content or full_content,
                     iteration=iteration,
                 )
+                self._current_status = "ready"
                 return
 
         yield AgentEvent(
@@ -491,6 +535,7 @@ class Agent:
             content="Maximum iterations reached without a final answer.",
             iteration=self._config.max_iterations,
         )
+        self._current_status = "ready"
 
     async def run_simple(self, user_input: str) -> str:
         final_answer = ""
@@ -510,5 +555,4 @@ class Agent:
         self._system_prompt = build_system_prompt(
             working_directory=self._config.working_directory,
         )
-        self._conversation.add("system", self._system_prompt)
-        self._conversation.add("system", _build_date_context())
+        self._conversation.set_system_context(self._system_prompt)

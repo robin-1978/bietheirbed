@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import platform
 
+from pc_assistant.platform_ import get_shell_name
+
 
 def build_system_prompt(
     tools_description: str = "",
@@ -12,6 +14,7 @@ def build_system_prompt(
         "You are PC Assistant, an intelligent AI agent that helps users control their computer through natural language. You can use tools to perform actions, or answer questions directly from your knowledge.",
         "",
         f"OS: {platform.system()} {platform.release()} ({platform.machine()})",
+        f"Shell: {get_shell_name()}",
     ]
 
     if working_directory:

@@ -43,7 +43,6 @@ def _group_tool_pairs(messages: list[dict[str, Any]]) -> list[list[dict[str, Any
 def truncate_messages(
     messages: list[dict[str, Any]],
     budget: int = 4096,
-    preserve_system: bool = True,
     max_tool_output_chars: int = 3000,
 ) -> list[dict[str, Any]]:
     if not messages:
@@ -56,21 +55,19 @@ def truncate_messages(
         processed.append(msg)
 
     system_msgs: list[dict[str, Any]] = []
-    other_msgs: list[dict[str, Any]] = []
+    conversation_msgs: list[dict[str, Any]] = []
     for msg in processed:
         if msg.get("role") == "system":
             system_msgs.append(msg)
         else:
-            other_msgs.append(msg)
+            conversation_msgs.append(msg)
 
     system_cost = sum(_estimate_tokens(m.get("content", "")) for m in system_msgs)
     remaining = budget - system_cost
-    if remaining <= 0 and preserve_system:
-        return system_msgs
     if remaining <= 0:
-        return []
+        return system_msgs
 
-    groups = _group_tool_pairs(other_msgs)
+    groups = _group_tool_pairs(conversation_msgs)
 
     selected_groups: list[list[dict[str, Any]]] = []
     total = 0
@@ -87,17 +84,14 @@ def truncate_messages(
         selected.extend(group)
 
     dropped_groups = groups[: len(groups) - len(selected_groups)]
-    if dropped_groups and preserve_system:
+    if dropped_groups:
         summary_parts: list[str] = []
         for group in dropped_groups:
             for msg in group:
                 snippet = msg.get("content", "")[:200]
                 summary_parts.append(f"[{msg.get('role', 'unknown')}] {snippet}")
         summary = "Summary of earlier messages:\n" + "\n".join(summary_parts)
-        summary_msg: dict[str, Any] = {"role": "system", "content": summary}
-        if preserve_system:
-            return system_msgs + [summary_msg] + selected
+        summary_msg: dict[str, Any] = {"role": "user", "content": summary}
+        return system_msgs + [summary_msg] + selected
 
-    if preserve_system:
-        return system_msgs + selected
-    return selected
+    return system_msgs + selected

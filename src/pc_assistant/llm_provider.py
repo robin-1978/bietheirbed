@@ -33,11 +33,28 @@ class LLMProvider:
         model_name: str = "",
         timeout: float = 120.0,
         max_retries: int = 3,
+        provider: str = "llamacpp",
+        api_key: str = "",
+        api_base: str = "",
     ) -> None:
-        self._server_url = server_url.rstrip("/")
+        self._provider = provider
+        self._api_key = api_key
         self._model_name = model_name
         self._timeout = timeout
         self._max_retries = max_retries
+
+        if provider == "openai":
+            self._server_url = "https://api.openai.com/v1"
+            self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        elif provider == "anthropic":
+            self._server_url = "https://api.anthropic.com"
+            self._headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"} if api_key else {}
+        elif provider == "openai_compatible":
+            self._server_url = (api_base or server_url).rstrip("/")
+            self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        else:
+            self._server_url = server_url.rstrip("/")
+            self._headers = {}
 
     async def _request_with_retry(
         self,
@@ -70,6 +87,74 @@ class LLMProvider:
                     raise
         raise last_error  # type: ignore[misc]
 
+    def _build_anthropic_payload(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, temperature: float = 0.7, max_tokens: int = 1024) -> dict[str, Any]:
+        system_msg = ""
+        filtered_msgs: list[dict[str, Any]] = []
+        for m in messages:
+            if m["role"] == "system":
+                system_msg += m["content"] + "\n"
+            else:
+                filtered_msgs.append(m)
+
+        payload: dict[str, Any] = {
+            "model": self._model_name,
+            "messages": filtered_msgs,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if system_msg:
+            payload["system"] = system_msg.strip()
+        if tools:
+            payload["tools"] = self._convert_tools_to_anthropic(tools)
+        return payload
+
+    def _convert_tools_to_anthropic(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        anthropic_tools: list[dict[str, Any]] = []
+        for t in tools:
+            func = t.get("function", {})
+            anthropic_tools.append({
+                "name": func.get("name", ""),
+                "description": func.get("description", ""),
+                "input_schema": func.get("parameters", {"type": "object", "properties": {}}),
+            })
+        return anthropic_tools
+
+    def _parse_anthropic_response(self, data: dict[str, Any]) -> LLMResponse:
+        content = ""
+        tool_calls: list[dict[str, Any]] = []
+        for block in data.get("content", []):
+            if block.get("type") == "text":
+                content += block.get("text", "")
+            elif block.get("type") == "tool_use":
+                tool_calls.append({
+                    "id": block.get("id", ""),
+                    "type": "function",
+                    "function": {
+                        "name": block.get("name", ""),
+                        "arguments": block.get("input", {}),
+                    },
+                })
+        return LLMResponse(
+            content=content,
+            tool_calls=tool_calls,
+            finish_reason=data.get("stop_reason", ""),
+            usage=data.get("usage", {}),
+        )
+
+    async def _chat_anthropic(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, temperature: float, max_tokens: int) -> LLMResponse:
+        payload = self._build_anthropic_payload(messages, tools, temperature, max_tokens)
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                resp = await self._request_with_retry(
+                    client, "POST", f"{self._server_url}/v1/messages", json=payload, headers=self._headers,
+                )
+                data = resp.json()
+        except httpx.HTTPError as e:
+            return LLMResponse(content=f"LLM request failed: {e}", finish_reason="error")
+        except Exception as e:
+            return LLMResponse(content=f"LLM request failed: {e}", finish_reason="error")
+        return self._parse_anthropic_response(data)
+
     async def chat(
         self,
         messages: list[dict[str, Any]],
@@ -78,6 +163,9 @@ class LLMProvider:
         max_tokens: int = 1024,
         tool_choice: str | dict[str, Any] | None = None,
     ) -> LLMResponse:
+        if self._provider == "anthropic":
+            return await self._chat_anthropic(messages, tools, temperature, max_tokens)
+
         payload: dict[str, Any] = {
             "model": self._model_name,
             "messages": messages,
@@ -91,7 +179,7 @@ class LLMProvider:
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 resp = await self._request_with_retry(
-                    client, "POST", f"{self._server_url}/v1/chat/completions", json=payload
+                    client, "POST", f"{self._server_url}/v1/chat/completions", json=payload, headers=self._headers,
                 )
                 data = resp.json()
         except httpx.HTTPError as e:
@@ -120,6 +208,15 @@ class LLMProvider:
         max_tokens: int = 1024,
         tool_choice: str | dict[str, Any] | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
+        if self._provider == "anthropic":
+            result = await self.chat(messages, tools, temperature, max_tokens, tool_choice)
+            yield StreamChunk(
+                delta_content=result.content,
+                delta_tool_calls=result.tool_calls,
+                finish_reason=result.finish_reason,
+            )
+            return
+
         payload: dict[str, Any] = {
             "model": self._model_name,
             "messages": messages,
@@ -141,6 +238,7 @@ class LLMProvider:
                     "POST",
                     f"{self._server_url}/v1/chat/completions",
                     json=payload,
+                    headers=self._headers,
                 ) as response:
                     response.raise_for_status()
                     async for line in response.aiter_lines():
@@ -258,7 +356,10 @@ class LLMProvider:
     async def health_check(self) -> bool:
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get(f"{self._server_url}/v1/models")
+                if self._provider == "anthropic":
+                    resp = await client.get(f"{self._server_url}/", headers=self._headers)
+                    return resp.status_code == 200
+                resp = await client.get(f"{self._server_url}/v1/models", headers=self._headers)
                 return resp.status_code == 200
         except httpx.HTTPError:
             return False

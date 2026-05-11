@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import os
-import platform
 import subprocess
 from typing import Any
 
+from pc_assistant.platform_ import get_platform
 from pc_assistant.tools.base import ToolBase
 
 
@@ -47,12 +46,11 @@ class ApplicationTool(ToolBase):
         if not command:
             return {"error": "No command provided for launch"}
         try:
-            if platform.system() == "Windows":
-                proc = subprocess.Popen(
-                    command,
-                    shell=True,
-                    creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-                )
+            current = get_platform()
+            if current == "windows":
+                proc = subprocess.Popen(command, shell=True, creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
+            elif current == "macos":
+                proc = subprocess.Popen(["open", "-a", command] if not command.startswith("/") else [command], start_new_session=True)
             else:
                 proc = subprocess.Popen(command, shell=True, start_new_session=True)
             return {"success": True, "pid": proc.pid}

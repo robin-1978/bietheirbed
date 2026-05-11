@@ -3,6 +3,7 @@ from __future__ import annotations
 import platform
 from typing import Any
 
+from pc_assistant.platform_ import get_platform
 from pc_assistant.tools.base import ToolBase
 
 
@@ -89,7 +90,8 @@ class SystemTool(ToolBase):
             import psutil
 
             drive = kwargs.get("drive")
-            if platform.system() == "Windows" and drive:
+            current = get_platform()
+            if current == "windows" and drive:
                 path = f"{drive}:\\"
             else:
                 path = drive or "/"

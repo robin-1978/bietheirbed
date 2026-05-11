@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from pc_assistant.platform_ import get_shell_command
 from pc_assistant.tools.base import ToolBase
 
 
@@ -39,8 +40,9 @@ class ShellTool(ToolBase):
 
     async def _run(self, command: str, timeout: int | None, cwd: str | None) -> dict[str, Any]:
         try:
-            proc = await asyncio.create_subprocess_shell(
-                command,
+            shell_exe, shell_arg = get_shell_command()
+            proc = await asyncio.create_subprocess_exec(
+                shell_exe, shell_arg, command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,

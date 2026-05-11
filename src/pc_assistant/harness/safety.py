@@ -4,6 +4,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from pc_assistant.platform_ import get_default_dangerous_commands, get_default_protected_paths
+
 
 class SafetyCheckResult:
     def __init__(self, allowed: bool, reason: str = "") -> None:
@@ -13,27 +15,6 @@ class SafetyCheckResult:
     def __bool__(self) -> bool:
         return self.allowed
 
-
-_DEFAULT_DANGEROUS_PATTERNS: list[str] = [
-    "rm -rf /",
-    "del /s /q",
-    "rd /s",
-    "rmdir /s",
-    "remove-item -recurse",
-    "format",
-    "shutdown",
-    "mkfs",
-    "taskkill /f",
-    "taskkill /F",
-    "reg delete",
-    "net user",
-    "net localgroup",
-    "cipher /w",
-    "diskpart",
-    "bcdedit",
-    "icacls.*deny",
-    "takeown /f",
-]
 
 _CONFIRMATION_COMMAND_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\bdelete\b", re.IGNORECASE),
@@ -58,10 +39,10 @@ class SafetyChecker:
         protected_paths: list[str] | None = None,
         working_directory: str | None = None,
     ) -> None:
-        base_patterns = _DEFAULT_DANGEROUS_PATTERNS
+        base_patterns = get_default_dangerous_commands()
         custom_patterns = [c.lower() for c in (dangerous_commands or [])]
         self._dangerous_commands = base_patterns + custom_patterns
-        self._protected_paths = [Path(p).resolve() for p in (protected_paths or [])]
+        self._protected_paths = [Path(p).resolve() for p in (protected_paths or get_default_protected_paths())]
         self._working_directory = Path(working_directory).resolve() if working_directory else None
 
     def check_command(self, command: str) -> SafetyCheckResult:

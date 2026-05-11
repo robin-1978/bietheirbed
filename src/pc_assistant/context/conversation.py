@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any
+from datetime import datetime
+from typing import Any, Callable
 
 from pydantic import BaseModel, Field
 
@@ -12,10 +13,23 @@ class Message(BaseModel):
     tool_call_id: str | None = None
 
 
+def _build_date_context() -> str:
+    now = datetime.now()
+    weekday_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    return f"Current date: {now.strftime('%Y-%m-%d')} ({weekday_names[now.weekday()]})\nCurrent time: {now.strftime('%H:%M:%S')}"
+
+
 class ConversationManager:
     def __init__(self, max_messages: int = 100) -> None:
         self._messages: list[Message] = []
         self._max_messages = max_messages
+        self._system_prompt: str = ""
+        self._date_context_provider: Callable[[], str] = _build_date_context
+
+    def set_system_context(self, system_prompt: str, date_context_provider: Callable[[], str] | None = None) -> None:
+        self._system_prompt = system_prompt
+        if date_context_provider is not None:
+            self._date_context_provider = date_context_provider
 
     def add(self, role: str, content: str, **kwargs: Any) -> Message:
         msg = Message(role=role, content=content, **kwargs)
@@ -46,10 +60,16 @@ class ConversationManager:
 
     def get_messages_for_llm(self) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
+
+        if self._system_prompt:
+            result.append({"role": "system", "content": self._system_prompt})
+
+        date_ctx = self._date_context_provider()
+        if date_ctx:
+            result.append({"role": "system", "content": date_ctx})
+
         for msg in self._messages:
-            if msg.role == "system":
-                result.append({"role": "system", "content": msg.content})
-            elif msg.role == "user":
+            if msg.role == "user":
                 result.append({"role": "user", "content": msg.content})
             elif msg.role == "assistant":
                 d: dict[str, Any] = {"role": "assistant", "content": msg.content}
@@ -64,6 +84,7 @@ class ConversationManager:
                 })
             else:
                 result.append({"role": msg.role, "content": msg.content})
+
         return result
 
     def summarize_old_messages(self, keep_recent: int = 10) -> None:
@@ -76,7 +97,7 @@ class ConversationManager:
             snippet = msg.content[:200]
             summary_parts.append(f"[{msg.role}] {snippet}")
         summary = "Summary of earlier conversation:\n" + "\n".join(summary_parts)
-        summary_msg = Message(role="system", content=summary)
+        summary_msg = Message(role="user", content=summary)
         self._messages = [summary_msg] + recent_messages
 
     def estimate_token_count(self) -> int:

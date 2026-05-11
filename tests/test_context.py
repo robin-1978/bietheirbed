@@ -8,6 +8,7 @@ import pytest
 from pc_assistant.context.conversation import ConversationManager, Message
 from pc_assistant.context.memory import MemoryStore
 from pc_assistant.context.system_prompt import build_system_prompt
+from pc_assistant.platform_ import get_shell_name
 from pc_assistant.context.truncator import truncate_messages
 
 
@@ -16,6 +17,7 @@ class TestBuildSystemPrompt:
         prompt = build_system_prompt()
         assert "PC Assistant" in prompt
         assert "Tool Usage Rules" in prompt
+        assert f"Shell: {get_shell_name()}" in prompt
 
     def test_with_tools(self):
         prompt = build_system_prompt(tools_description="filesystem, shell")
@@ -95,7 +97,7 @@ class TestConversationManager:
 
     def test_get_messages_for_llm(self):
         cm = ConversationManager()
-        cm.add("system", "sys")
+        cm.set_system_context("sys", date_context_provider=lambda: "")
         cm.add_user("hello")
         tc = [{"id": "call_1", "function": {"name": "test", "arguments": {}}}]
         cm.add_assistant("thinking", tool_calls=tc)
@@ -128,7 +130,7 @@ class TestConversationManager:
         cm.summarize_old_messages(keep_recent=5)
         assert len(cm) <= 6
         msgs = cm.get_messages()
-        assert msgs[0]["role"] == "system"
+        assert msgs[0]["role"] == "user"
         assert "Summary" in msgs[0]["content"] or "earlier" in msgs[0]["content"].lower()
 
     def test_summarize_not_needed(self):
@@ -235,13 +237,13 @@ class TestTruncateMessages:
         result = truncate_messages(messages, budget=10000, max_tool_output_chars=1000)
         assert len(result[0]["content"]) <= 1100
 
-    def test_preserve_system_false(self):
+    def test_system_always_preserved(self):
         messages = [
             {"role": "system", "content": "system prompt"},
             {"role": "user", "content": "hello"},
         ]
-        result = truncate_messages(messages, budget=10000, preserve_system=False)
-        assert not any(m["role"] == "system" for m in result)
+        result = truncate_messages(messages, budget=10000)
+        assert result[0]["role"] == "system"
 
     def test_keeps_recent_messages(self):
         messages = [
