@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from pc_assistant.context.conversation import ConversationManager, Message
-from pc_assistant.context.memory import MemoryStore
+from pc_assistant.context.memory import UserMemory
 from pc_assistant.context.system_prompt import build_system_prompt
 from pc_assistant.platform_ import get_shell_name
 from pc_assistant.context.truncator import truncate_messages
@@ -183,49 +183,43 @@ class TestConversationManager:
 
 class TestMemoryStore:
     def test_set_and_get(self, tmp_path):
-        store = MemoryStore(store_path=str(tmp_path / "memory.json"))
-        store.set("key1", "value1")
-        assert store.get("key1") == "value1"
+        mem = UserMemory(storage_path=str(tmp_path / "memory.json"))
+        mem.store("key1", "value1")
+        item = mem.retrieve("key1")
+        assert item is not None
+        assert item.value == "value1"
 
     def test_get_missing(self, tmp_path):
-        store = MemoryStore(store_path=str(tmp_path / "memory.json"))
-        assert store.get("nonexistent") is None
-
-    def test_get_with_default(self, tmp_path):
-        store = MemoryStore(store_path=str(tmp_path / "memory.json"))
-        assert store.get("nonexistent", "default") == "default"
+        mem = UserMemory(storage_path=str(tmp_path / "memory.json"))
+        assert mem.retrieve("nonexistent") is None
 
     def test_delete(self, tmp_path):
-        store = MemoryStore(store_path=str(tmp_path / "memory.json"))
-        store.set("key1", "value1")
-        store.delete("key1")
-        assert store.get("key1") is None
-
-    def test_keys(self, tmp_path):
-        store = MemoryStore(store_path=str(tmp_path / "memory.json"))
-        store.set("k1", "v1")
-        store.set("k2", "v2")
-        assert set(store.keys()) == {"k1", "k2"}
+        mem = UserMemory(storage_path=str(tmp_path / "memory.json"))
+        mem.store("key1", "value1")
+        mem.delete("key1")
+        assert mem.retrieve("key1") is None
 
     def test_clear(self, tmp_path):
-        store = MemoryStore(store_path=str(tmp_path / "memory.json"))
-        store.set("k1", "v1")
-        store.clear()
-        assert store.keys() == []
+        mem = UserMemory(storage_path=str(tmp_path / "memory.json"))
+        mem.store("k1", "v1")
+        mem.clear()
+        assert len(mem) == 0
 
     def test_persistence(self, tmp_path):
         path = str(tmp_path / "memory.json")
-        store1 = MemoryStore(store_path=path)
-        store1.set("persistent_key", "persistent_value")
-        store2 = MemoryStore(store_path=path)
-        assert store2.get("persistent_key") == "persistent_value"
+        mem1 = UserMemory(storage_path=path)
+        mem1.store("persistent_key", "persistent_value")
+        mem2 = UserMemory(storage_path=path)
+        item = mem2.retrieve("persistent_key")
+        assert item is not None
+        assert item.value == "persistent_value"
 
     def test_corrupted_file(self, tmp_path):
         path = str(tmp_path / "memory.json")
         with open(path, "w") as f:
             f.write("not valid json {{{")
-        store = MemoryStore(store_path=path)
-        assert store.keys() == []
+        mem = UserMemory(storage_path=path)
+        assert len(mem) == 0
 
 
 class TestTruncateMessages:

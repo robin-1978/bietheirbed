@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from pc_assistant.config import AppConfig, load_config
 from pc_assistant.context.conversation import ConversationManager
+from pc_assistant.context.memory import UserMemory
 from pc_assistant.context.system_prompt import build_system_prompt
 from pc_assistant.context.truncator import truncate_messages
 from pc_assistant.harness.audit import AuditLogger
@@ -166,6 +167,7 @@ class Agent:
             api_base=self._config.llm_api_base,
         )
         self._conversation = ConversationManager()
+        self._memory = UserMemory()
         self._registry = ToolRegistry()
         self._safety = SafetyChecker(
             dangerous_commands=self._config.dangerous_commands,
@@ -191,6 +193,10 @@ class Agent:
         return self._conversation
 
     @property
+    def memory(self) -> UserMemory:
+        return self._memory
+
+    @property
     def registry(self) -> ToolRegistry:
         return self._registry
 
@@ -209,6 +215,7 @@ class Agent:
             "total_tokens": self._total_prompt_tokens + self._total_completion_tokens,
             "total_iterations": self._total_iterations,
             "conversation_turns": len([m for m in self._conversation.get_messages() if m["role"] == "user"]),
+            "memory_items": len(self._memory),
             "tools": self._registry.list_tools(),
             "working_directory": self._config.working_directory,
         }
@@ -271,6 +278,17 @@ class Agent:
         self._cancelled = False
         self._current_status = "thinking"
         self._conversation.add_user(user_input)
+
+        extracted = self._memory.extract_from_text(user_input)
+        for key, value, category, source in extracted:
+            self._memory.store(key, value, category=category, source=source)
+
+        memory_context = self._memory.build_context_string()
+        if memory_context:
+            full_system = self._system_prompt + "\n\n" + memory_context
+        else:
+            full_system = self._system_prompt
+        self._conversation.set_system_context(full_system)
 
         recent_calls: list[str] = []
         max_recent_calls = 10

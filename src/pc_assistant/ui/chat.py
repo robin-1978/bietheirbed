@@ -45,6 +45,8 @@ _WELCOME_ART = r"""
 _COMMANDS_HELP = """\
 /exit, /quit    Save conversation and exit
 /clear          Clear conversation history
+/memory         Show remembered user preferences
+/memory clear   Clear all memories
 /history        Show conversation history summary
 /tools          List available tools
 /status         Show detailed agent status
@@ -319,11 +321,42 @@ class ChatUI:
                 table.add_row("Prompt Tokens", str(status["total_prompt_tokens"]))
                 table.add_row("Completion Tokens", str(status["total_completion_tokens"]))
                 table.add_row("Total Tokens", str(status["total_tokens"]))
+                table.add_row("Memory Items", str(status["memory_items"]))
                 table.add_row("Tools", ", ".join(status["tools"]))
                 self._console.print(table)
             else:
                 for k, v in status.items():
                     print(f"  {k}: {v}")
+            return True
+
+        if cmd == "/memory clear":
+            if self._agent is None:
+                self._print_warning("No agent initialized yet.")
+                return True
+            self._agent.memory.clear()
+            self._print("[dim]All memories cleared.[/dim]" if self._console else "All memories cleared.")
+            return True
+
+        if cmd == "/memory":
+            if self._agent is None:
+                self._print_warning("No agent initialized yet.")
+                return True
+            items = self._agent.memory.get_all()
+            if not items:
+                self._print("[dim]No memories stored yet. I'll learn your preferences as we chat![/dim]" if self._console else "No memories stored yet.")
+                return True
+            if self._console is not None:
+                table = Table(title="🧠 User Memory", show_lines=True)
+                table.add_column("Category", style="bold", width=12)
+                table.add_column("Key", width=25)
+                table.add_column("Value", width=40)
+                table.add_column("Access", width=6)
+                for item in sorted(items, key=lambda x: x.category):
+                    table.add_row(item.category, item.key, item.value[:60], str(item.access_count))
+                self._console.print(table)
+            else:
+                for item in items:
+                    print(f"  [{item.category}] {item.key}: {item.value}")
             return True
 
         self._print_warning(f"Unknown command: {command}")
