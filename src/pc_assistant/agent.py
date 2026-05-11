@@ -233,6 +233,14 @@ class Agent:
     def register_tool(self, tool: Any) -> None:
         self._registry.register(tool)
 
+    @staticmethod
+    def _ensure_system_first(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not messages:
+            return messages
+        system_msgs = [m for m in messages if m.get("role") == "system"]
+        other_msgs = [m for m in messages if m.get("role") != "system"]
+        return system_msgs + other_msgs
+
     async def _call_llm_with_retry(
         self,
         messages: list[dict[str, Any]],
@@ -283,6 +291,7 @@ class Agent:
                 messages,
                 budget=self._config.context_window_budget,
             )
+            messages = self._ensure_system_first(messages)
             tools = self._registry.all_schemas() if len(self._registry) > 0 else None
 
             full_content = ""

@@ -192,7 +192,6 @@ class ChatUI:
             from pc_assistant import __version__
             print(f"PC Assistant v{__version__}")
             print("Type /help for commands\n")
-        self._render_status_bar()
 
     def _get_input(self) -> str | None:
         if _HAS_RICH_PROMPT and self._console is not None:
@@ -504,6 +503,7 @@ class ChatUI:
         self._show_welcome()
 
         while self._running:
+            self._render_status_bar()
             user_input = self._get_input()
 
             if user_input is None:

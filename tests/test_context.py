@@ -77,14 +77,17 @@ class TestConversationManager:
 
     def test_get_messages(self):
         cm = ConversationManager()
-        cm.add("system", "sys")
         cm.add_user("hello")
         cm.add_assistant("hi")
         msgs = cm.get_messages()
-        assert len(msgs) == 3
-        assert msgs[0]["role"] == "system"
-        assert msgs[1]["role"] == "user"
-        assert msgs[2]["role"] == "assistant"
+        assert len(msgs) == 2
+        assert msgs[0]["role"] == "user"
+        assert msgs[1]["role"] == "assistant"
+
+    def test_system_message_rejected(self):
+        cm = ConversationManager()
+        with pytest.raises(ValueError, match="set_system_context"):
+            cm.add("system", "sys")
 
     def test_get_messages_with_tool_calls(self):
         cm = ConversationManager()
@@ -117,10 +120,10 @@ class TestConversationManager:
 
     def test_max_messages(self):
         cm = ConversationManager(max_messages=3)
-        cm.add("system", "s")
         cm.add_user("a")
         cm.add_user("b")
         cm.add_user("c")
+        cm.add_user("d")
         assert len(cm) == 3
 
     def test_summarize_old_messages(self):

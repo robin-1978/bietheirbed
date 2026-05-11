@@ -32,6 +32,8 @@ class ConversationManager:
             self._date_context_provider = date_context_provider
 
     def add(self, role: str, content: str, **kwargs: Any) -> Message:
+        if role == "system":
+            raise ValueError("System messages must be set via set_system_context(), not add()")
         msg = Message(role=role, content=content, **kwargs)
         self._messages.append(msg)
         if len(self._messages) > self._max_messages:
@@ -69,7 +71,9 @@ class ConversationManager:
             result.append({"role": "system", "content": date_ctx})
 
         for msg in self._messages:
-            if msg.role == "user":
+            if msg.role == "system":
+                continue
+            elif msg.role == "user":
                 result.append({"role": "user", "content": msg.content})
             elif msg.role == "assistant":
                 d: dict[str, Any] = {"role": "assistant", "content": msg.content}
