@@ -112,6 +112,25 @@ class TestConversationManager:
         assert "tool_calls" in msgs[2]
         assert msgs[3] == {"role": "tool", "content": "result", "tool_call_id": "call_1"}
 
+    def test_only_one_system_message_in_llm_output(self):
+        cm = ConversationManager()
+        cm.set_system_context("You are an assistant.", date_context_provider=lambda: "Current date: 2026-01-01")
+        cm.add_user("hello")
+        msgs = cm.get_messages_for_llm()
+        system_msgs = [m for m in msgs if m["role"] == "system"]
+        assert len(system_msgs) == 1, f"Expected exactly 1 system message, got {len(system_msgs)}"
+        assert "You are an assistant." in system_msgs[0]["content"]
+        assert "2026-01-01" in system_msgs[0]["content"]
+
+    def test_no_system_messages_in_conversation_history(self):
+        cm = ConversationManager()
+        cm.set_system_context("sys")
+        cm.add_user("hello")
+        cm.add_assistant("hi")
+        msgs = cm.get_messages()
+        system_msgs = [m for m in msgs if m["role"] == "system"]
+        assert len(system_msgs) == 0, "Conversation history should not contain system messages"
+
     def test_clear(self):
         cm = ConversationManager()
         cm.add_user("hello")

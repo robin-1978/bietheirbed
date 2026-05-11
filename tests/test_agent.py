@@ -475,6 +475,34 @@ class TestAgentReset:
         assert len(system_msgs) >= 1
 
 
+class TestAgentMessageFormat:
+    def test_llm_messages_have_exactly_one_system_at_head(self):
+        agent = Agent(config=AppConfig())
+        agent._conversation.add_user("hello")
+        agent._conversation.add_assistant("hi")
+        agent._conversation.add_user("what time is it?")
+        msgs = agent._conversation.get_messages_for_llm()
+        system_msgs = [m for m in msgs if m["role"] == "system"]
+        assert len(system_msgs) == 1, f"Expected exactly 1 system message, got {len(system_msgs)}"
+        assert msgs[0]["role"] == "system", "First message must be system"
+
+    def test_conversation_history_has_no_system_messages(self):
+        agent = Agent(config=AppConfig())
+        agent._conversation.add_user("hello")
+        agent._conversation.add_assistant("hi")
+        msgs = agent._conversation.get_messages()
+        system_msgs = [m for m in msgs if m["role"] == "system"]
+        assert len(system_msgs) == 0
+
+    def test_system_message_contains_date_context(self):
+        agent = Agent(config=AppConfig())
+        agent._conversation.add_user("hello")
+        msgs = agent._conversation.get_messages_for_llm()
+        system_content = msgs[0]["content"]
+        assert "Current date:" in system_content
+        assert "Current time:" in system_content
+
+
 class TestAgentGetStatus:
     def test_initial_status(self):
         agent = Agent(config=AppConfig())

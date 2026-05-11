@@ -23,13 +23,6 @@ class TestChatUIInit:
 
 
 class TestChatUIPrint:
-    def test_print_thought(self, capsys):
-        ui = ChatUI(config=AppConfig())
-        ui._console = None
-        ui._print_thought("thinking...")
-        captured = capsys.readouterr()
-        assert "thinking..." in captured.out
-
     def test_print_tool_call(self, capsys):
         ui = ChatUI(config=AppConfig())
         ui._console = None

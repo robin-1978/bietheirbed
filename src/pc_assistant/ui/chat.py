@@ -63,6 +63,7 @@ class _Spinner:
         self._frame_idx = 0
 
     def start(self, message: str = "") -> None:
+        self.stop()
         self._message = message
         self._running = True
         self._frame_idx = 0
@@ -114,6 +115,7 @@ class ChatUI:
                 "prompt": "green bold",
                 "ai_label": "blue bold",
                 "think_label": "dim italic",
+                "status_bar": "dim",
             })
             self._console = Console(theme=custom_theme)
         else:
@@ -125,12 +127,6 @@ class ChatUI:
         else:
             plain = " ".join(str(a) for a in args)
             print(plain)
-
-    def _print_thought(self, content: str) -> None:
-        if self._console is not None:
-            self._console.print(Text(content, style="thought"))
-        else:
-            print(f"  [thought] {content}")
 
     def _print_tool_call(self, name: str, arguments: dict[str, Any]) -> None:
         if self._console is not None:
@@ -180,7 +176,7 @@ class ChatUI:
         total_tokens = status.get("total_tokens", 0)
         status_text = f" {connected} {provider} | {model} | {agent_status} | turns: {turns} | tokens: {total_tokens} "
         self._console.print(
-            Panel(status_text, style="dim", border_style="dim", expand=False)
+            Panel(status_text, style="status_bar", border_style="dim", expand=False)
         )
 
     def _show_welcome(self) -> None:
@@ -286,6 +282,7 @@ class ChatUI:
                 table = Table(title="Configuration", show_lines=True)
                 table.add_column("Key", style="bold")
                 table.add_column("Value")
+                table.add_row("Provider", self._config.llm_provider)
                 table.add_row("LLM Server", self._config.llm_server_url)
                 table.add_row("Model", self._config.llm_model_name or "(not set)")
                 table.add_row("Max Iterations", str(self._config.max_iterations))
@@ -295,12 +292,10 @@ class ChatUI:
                 table.add_row("Working Dir", self._config.working_directory)
                 self._console.print(table)
             else:
-                print(f"  LLM Server: {self._config.llm_server_url}")
-                print(f"  Model:      {self._config.llm_model_name or '(not set)'}")
-                print(f"  Max Iters:  {self._config.max_iterations}")
-                print(f"  Shell Timeout: {self._config.shell_timeout}")
-                print(f"  Context Budget: {self._config.context_window_budget}")
-                print(f"  Log File:   {self._config.log_file}")
+                print(f"  Provider:    {self._config.llm_provider}")
+                print(f"  LLM Server:  {self._config.llm_server_url}")
+                print(f"  Model:       {self._config.llm_model_name or '(not set)'}")
+                print(f"  Max Iters:   {self._config.max_iterations}")
                 print(f"  Working Dir: {self._config.working_directory}")
             return True
 
@@ -371,7 +366,6 @@ class ChatUI:
                     self._spinner.start("Thinking...")
                     spinner_active = True
                     first_content_received = False
-                    self._render_status_bar()
 
                 elif event.type == "think_start":
                     think_start_time = time.time()
@@ -440,7 +434,6 @@ class ChatUI:
                         self._spinner.start(f"Executing {event.tool_name}...")
                         spinner_active = True
                         self._print_tool_call(event.tool_name, event.tool_args)
-                    self._render_status_bar()
 
                 elif event.type == "tool_result":
                     self._spinner.stop()
@@ -462,28 +455,24 @@ class ChatUI:
                             print(f"\n{event.content}\n")
                     elif event.content:
                         print(f"\n{event.content}\n")
-                    self._render_status_bar()
 
                 elif event.type == "error":
                     if spinner_active:
                         self._spinner.stop()
                         spinner_active = False
                     self._print_error(event.content)
-                    self._render_status_bar()
 
                 elif event.type == "iteration_limit":
                     if spinner_active:
                         self._spinner.stop()
                         spinner_active = False
                     self._print_warning(event.content)
-                    self._render_status_bar()
 
                 elif event.type == "cancelled":
                     if spinner_active:
                         self._spinner.stop()
                         spinner_active = False
                     self._print_warning("Operation cancelled by user.")
-                    self._render_status_bar()
 
         except KeyboardInterrupt:
             _cancel_handler()

@@ -63,12 +63,14 @@ class ConversationManager:
     def get_messages_for_llm(self) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
 
+        system_parts = []
         if self._system_prompt:
-            result.append({"role": "system", "content": self._system_prompt})
-
+            system_parts.append(self._system_prompt)
         date_ctx = self._date_context_provider()
         if date_ctx:
-            result.append({"role": "system", "content": date_ctx})
+            system_parts.append(date_ctx)
+        if system_parts:
+            result.append({"role": "system", "content": "\n\n".join(system_parts)})
 
         for msg in self._messages:
             if msg.role == "system":
