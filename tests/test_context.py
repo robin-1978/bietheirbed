@@ -15,7 +15,7 @@ class TestBuildSystemPrompt:
     def test_basic(self):
         prompt = build_system_prompt()
         assert "PC Assistant" in prompt
-        assert "ReAct" in prompt or "step by step" in prompt
+        assert "Tool Usage Rules" in prompt
 
     def test_with_tools(self):
         prompt = build_system_prompt(tools_description="filesystem, shell")

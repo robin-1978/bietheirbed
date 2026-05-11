@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+from datetime import datetime
 from typing import Any, AsyncGenerator, Callable
 
 from pydantic import BaseModel
@@ -55,6 +57,98 @@ def _strip_think_tags(text: str) -> tuple[str, str]:
     return remaining.strip(), thinking.strip()
 
 
+def _compute_call_signature(tool_name: str, arguments: dict[str, Any]) -> str:
+    args_json = json.dumps(arguments, sort_keys=True, ensure_ascii=False)
+    args_hash = hashlib.md5(args_json.encode()).hexdigest()[:8]
+    return f"{tool_name}:{args_hash}"
+
+
+def _build_date_context() -> str:
+    now = datetime.now()
+    weekday_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    return f"Current date: {now.strftime('%Y-%m-%d')} ({weekday_names[now.weekday()]})\nCurrent time: {now.strftime('%H:%M:%S')}"
+
+
+class _ThinkStreamParser:
+    def __init__(self) -> None:
+        self._in_think = False
+        self._buffer = ""
+        self._think_content = ""
+        self._clean_content = ""
+
+    @property
+    def in_think(self) -> bool:
+        return self._in_think
+
+    @property
+    def think_content(self) -> str:
+        return self._think_content
+
+    @property
+    def clean_content(self) -> str:
+        return self._clean_content
+
+    def feed(self, delta: str) -> list[tuple[str, str]]:
+        self._buffer += delta
+        events: list[tuple[str, str]] = []
+
+        while self._buffer:
+            if self._in_think:
+                close_match = _THINK_CLOSE.search(self._buffer)
+                if close_match:
+                    text = self._buffer[:close_match.start()]
+                    if text:
+                        self._think_content += text
+                        events.append(("stream_think_delta", text))
+                    self._in_think = False
+                    self._buffer = self._buffer[close_match.end():]
+                    events.append(("think_end", ""))
+                else:
+                    if _THINK_OPEN.search(self._buffer):
+                        potential_partial = self._buffer
+                        self._buffer = ""
+                        break
+                    text = self._buffer
+                    self._think_content += text
+                    if text:
+                        events.append(("stream_think_delta", text))
+                    self._buffer = ""
+            else:
+                open_match = _THINK_OPEN.search(self._buffer)
+                if open_match:
+                    before = self._buffer[:open_match.start()]
+                    if before:
+                        self._clean_content += before
+                        events.append(("stream_delta", before))
+                    self._in_think = True
+                    self._buffer = self._buffer[open_match.end():]
+                    events.append(("think_start", ""))
+                else:
+                    if "</think" in self._buffer or "<thi" in self._buffer:
+                        potential_partial = self._buffer
+                        self._buffer = ""
+                        break
+                    text = self._buffer
+                    self._clean_content += text
+                    if text:
+                        events.append(("stream_delta", text))
+                    self._buffer = ""
+
+        return events
+
+    def flush(self) -> list[tuple[str, str]]:
+        events: list[tuple[str, str]] = []
+        if self._buffer:
+            if self._in_think:
+                self._think_content += self._buffer
+                events.append(("stream_think_delta", self._buffer))
+            else:
+                self._clean_content += self._buffer
+                events.append(("stream_delta", self._buffer))
+            self._buffer = ""
+        return events
+
+
 class Agent:
     def __init__(
         self,
@@ -76,8 +170,12 @@ class Agent:
         self._limiter = RateLimiter()
         self._audit = AuditLogger()
         self._confirm_callback = confirm_callback
-        self._system_prompt = build_system_prompt()
+        self._cancelled = False
+        self._system_prompt = build_system_prompt(
+            working_directory=self._config.working_directory,
+        )
         self._conversation.add("system", self._system_prompt)
+        self._conversation.add("system", _build_date_context())
         self._register_builtin_tools()
 
     @property
@@ -87,6 +185,9 @@ class Agent:
     @property
     def registry(self) -> ToolRegistry:
         return self._registry
+
+    def cancel(self) -> None:
+        self._cancelled = True
 
     async def health_check(self) -> bool:
         return await self._llm.health_check()
@@ -133,9 +234,19 @@ class Agent:
             )
             return
 
+        self._cancelled = False
         self._conversation.add_user(user_input)
 
+        recent_calls: list[str] = []
+        max_recent_calls = 10
+        empty_response_count = 0
+        max_empty_retries = 2
+
         for iteration in range(self._config.max_iterations):
+            if self._cancelled:
+                yield AgentEvent(type="cancelled", content="Operation cancelled by user.", iteration=iteration)
+                return
+
             messages = truncate_messages(
                 self._conversation.get_messages(),
                 budget=self._config.context_window_budget,
@@ -146,11 +257,16 @@ class Agent:
             tool_calls_from_stream: list[dict[str, Any]] = []
             finish_reason = ""
             stream_had_error = False
+            think_parser = _ThinkStreamParser()
 
             yield AgentEvent(type="stream_start", iteration=iteration)
 
             try:
                 async for chunk in self._llm.chat_stream(messages, tools=tools, max_tokens=self._config.max_tokens):
+                    if self._cancelled:
+                        yield AgentEvent(type="cancelled", content="Operation cancelled by user.", iteration=iteration)
+                        return
+
                     if chunk.finish_reason == "error":
                         yield AgentEvent(
                             type="error",
@@ -162,13 +278,11 @@ class Agent:
 
                     if chunk.delta_content:
                         full_content += chunk.delta_content
-                        clean, thinking = _strip_think_tags(full_content)
-                        if thinking:
-                            pass
-                        if clean:
+                        parsed_events = think_parser.feed(chunk.delta_content)
+                        for evt_type, evt_content in parsed_events:
                             yield AgentEvent(
-                                type="stream_delta",
-                                content=chunk.delta_content,
+                                type=evt_type,
+                                content=evt_content,
                                 iteration=iteration,
                             )
 
@@ -188,6 +302,13 @@ class Agent:
             if stream_had_error:
                 return
 
+            remaining_events = think_parser.flush()
+            for evt_type, evt_content in remaining_events:
+                yield AgentEvent(type=evt_type, content=evt_content, iteration=iteration)
+
+            if think_parser.in_think:
+                yield AgentEvent(type="think_end", content="", iteration=iteration)
+
             clean_content, thinking_content = _strip_think_tags(full_content)
 
             yield AgentEvent(type="stream_end", iteration=iteration)
@@ -202,9 +323,13 @@ class Agent:
             if tool_calls_from_stream:
                 self._conversation.add_assistant(
                     clean_content or full_content,
-                    tool_calls=tool_calls_from_stream if tool_calls_from_stream else None,
+                    tool_calls=tool_calls_from_stream,
                 )
                 for tool_call in tool_calls_from_stream:
+                    if self._cancelled:
+                        yield AgentEvent(type="cancelled", content="Operation cancelled by user.", iteration=iteration)
+                        return
+
                     func = tool_call.get("function", {})
                     tool_name = func.get("name", "")
                     arguments = func.get("arguments", {})
@@ -218,6 +343,26 @@ class Agent:
 
                     if not isinstance(arguments, dict):
                         arguments = {}
+
+                    call_sig = _compute_call_signature(tool_name, arguments)
+                    if call_sig in recent_calls:
+                        self._audit.log(
+                            action="loop_detected",
+                            tool=tool_name,
+                            parameters=arguments,
+                            allowed=False,
+                            reason=f"Repeated tool call detected: {tool_name}",
+                        )
+                        yield AgentEvent(
+                            type="iteration_limit",
+                            content=f"Repeated tool call detected ({tool_name}), possible infinite loop. Terminated.",
+                            iteration=iteration,
+                        )
+                        return
+
+                    recent_calls.append(call_sig)
+                    if len(recent_calls) > max_recent_calls:
+                        recent_calls.pop(0)
 
                     safety_result = self._safety.check_tool_call(tool_name, arguments)
 
@@ -297,20 +442,48 @@ class Agent:
                             iteration=iteration,
                         )
             else:
-                self._conversation.add_assistant(clean_content or full_content)
-
-                if clean_content:
+                if finish_reason == "length" and clean_content:
+                    self._conversation.add_assistant(clean_content)
                     yield AgentEvent(
                         type="final_answer",
                         content=clean_content,
                         iteration=iteration,
                     )
-                else:
-                    yield AgentEvent(
-                        type="final_answer",
-                        content=full_content,
-                        iteration=iteration,
-                    )
+                    return
+
+                if not clean_content and not full_content:
+                    empty_response_count += 1
+                    if empty_response_count > max_empty_retries:
+                        self._conversation.add_assistant("I was unable to generate a response. Please try again.")
+                        yield AgentEvent(
+                            type="final_answer",
+                            content="I was unable to generate a response. Please try again.",
+                            iteration=iteration,
+                        )
+                        return
+                    self._conversation.add("system", "You did not produce any output. Please respond to the user's question.")
+                    continue
+
+                if not clean_content and full_content:
+                    empty_response_count += 1
+                    if empty_response_count > max_empty_retries:
+                        self._conversation.add_assistant("I was unable to generate a visible response. Please try again.")
+                        yield AgentEvent(
+                            type="final_answer",
+                            content="I was unable to generate a visible response. Please try again.",
+                            iteration=iteration,
+                        )
+                        return
+                    self._conversation.add("user", "Please provide your answer based on your thinking.")
+                    continue
+
+                empty_response_count = 0
+                self._conversation.add_assistant(clean_content or full_content)
+                yield AgentEvent(
+                    type="final_answer",
+                    content=clean_content or full_content,
+                    iteration=iteration,
+                )
                 return
 
         yield AgentEvent(
@@ -328,8 +501,14 @@ class Agent:
                 final_answer = event.content
             elif event.type == "iteration_limit":
                 final_answer = event.content
+            elif event.type == "cancelled":
+                final_answer = event.content
         return final_answer
 
     def reset_conversation(self) -> None:
         self._conversation.clear()
+        self._system_prompt = build_system_prompt(
+            working_directory=self._config.working_directory,
+        )
         self._conversation.add("system", self._system_prompt)
+        self._conversation.add("system", _build_date_context())

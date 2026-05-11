@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import signal
 import sys
+import threading
+import time
 from typing import Any, Callable
 
 from pc_assistant.config import AppConfig
@@ -10,6 +14,7 @@ from pc_assistant.agent import Agent, AgentEvent
 
 try:
     from rich.console import Console
+    from rich.live import Live
     from rich.markdown import Markdown
     from rich.panel import Panel
     from rich.text import Text
@@ -46,25 +51,42 @@ _COMMANDS_HELP = """\
 /config         Show current configuration\
 """
 
-_THINK_OPEN_RE = re.compile(r"<think[^>]*>", re.IGNORECASE)
-_THINK_CLOSE_RE = re.compile(r"</think\s*>", re.IGNORECASE)
+_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 
-def _strip_think_tags(text: str) -> tuple[str, str]:
-    thinking = ""
-    remaining = text
-    while True:
-        m_open = _THINK_OPEN_RE.search(remaining)
-        if m_open is None:
-            break
-        m_close = _THINK_CLOSE_RE.search(remaining, m_open.end())
-        if m_close is None:
-            thinking += remaining[m_open.end():]
-            remaining = remaining[:m_open.start()]
-            break
-        thinking += remaining[m_open.end():m_close.start()]
-        remaining = remaining[:m_open.start()] + remaining[m_close.end():]
-    return remaining.strip(), thinking.strip()
+class _Spinner:
+    def __init__(self) -> None:
+        self._running = False
+        self._thread: threading.Thread | None = None
+        self._message = ""
+        self._frame_idx = 0
+
+    def start(self, message: str = "") -> None:
+        self._message = message
+        self._running = True
+        self._frame_idx = 0
+        self._thread = threading.Thread(target=self._spin, daemon=True)
+        self._thread.start()
+
+    def update(self, message: str) -> None:
+        self._message = message
+
+    def stop(self) -> None:
+        self._running = False
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+            self._thread = None
+        sys.stdout.write("\r" + " " * 60 + "\r")
+        sys.stdout.flush()
+
+    def _spin(self) -> None:
+        while self._running:
+            frame = _SPINNER_FRAMES[self._frame_idx % len(_SPINNER_FRAMES)]
+            msg = f"\r  {frame} {self._message}" if self._message else f"\r  {frame}"
+            sys.stdout.write(msg)
+            sys.stdout.flush()
+            self._frame_idx += 1
+            time.sleep(0.08)
 
 
 class ChatUI:
@@ -77,6 +99,8 @@ class ChatUI:
         self._agent: Agent | None = None
         self._confirm_callback = confirm_callback
         self._running = False
+        self._cancelled = False
+        self._spinner = _Spinner()
         if _HAS_RICH:
             custom_theme = Theme({
                 "thought": "dim italic",
@@ -88,6 +112,7 @@ class ChatUI:
                 "warning": "yellow",
                 "prompt": "green bold",
                 "ai_label": "blue bold",
+                "think_label": "dim italic",
             })
             self._console = Console(theme=custom_theme)
         else:
@@ -271,63 +296,158 @@ class ChatUI:
             self._print_error("Agent not initialized.")
             return
 
-        streaming_text = ""
-        in_stream = False
+        self._cancelled = False
+        self._agent._cancelled = False
 
-        async for event in self._agent.run(user_input):
-            if event.type == "stream_start":
-                in_stream = True
-                streaming_text = ""
-                if self._console is not None:
-                    self._console.print()
-                    self._console.print("[ai_label]AI>[/ai_label]", end=" ")
-                else:
-                    print("\nAI> ", end="", flush=True)
+        think_start_time: float | None = None
+        think_text_parts: list[str] = []
+        in_think_display = False
+        first_content_received = False
+        spinner_active = False
 
-            elif event.type == "stream_delta":
-                in_stream = True
-                streaming_text += event.content
-                clean, _ = _strip_think_tags(streaming_text)
-                if clean or not streaming_text.startswith("<"):
+        def _cancel_handler() -> None:
+            self._cancelled = True
+            if self._agent is not None:
+                self._agent.cancel()
+
+        loop = asyncio.get_event_loop()
+        try:
+            loop.add_signal_handler(signal.SIGINT, _cancel_handler)
+        except (NotImplementedError, OSError):
+            pass
+
+        try:
+            async for event in self._agent.run(user_input):
+                if self._cancelled:
+                    self._spinner.stop()
+                    spinner_active = False
+                    self._print_warning("Operation cancelled.")
+                    break
+
+                if event.type == "stream_start":
+                    self._spinner.start("Thinking...")
+                    spinner_active = True
+                    first_content_received = False
+
+                elif event.type == "think_start":
+                    think_start_time = time.time()
+                    think_text_parts = []
+                    in_think_display = True
+                    self._spinner.stop()
+                    spinner_active = False
+                    if self._console is not None:
+                        self._console.print()
+                        self._console.print("[think_label]💭 Thinking...[/think_label]")
+                    else:
+                        print("\n  💭 Thinking...")
+
+                elif event.type == "stream_think_delta":
+                    if not first_content_received:
+                        first_content_received = True
+                    think_text_parts.append(event.content)
                     sys.stdout.write(event.content)
                     sys.stdout.flush()
 
-            elif event.type == "stream_end":
-                if in_stream:
+                elif event.type == "think_end":
+                    in_think_display = False
+                    elapsed = time.time() - think_start_time if think_start_time else 0
                     sys.stdout.write("\n")
                     sys.stdout.flush()
-                    in_stream = False
+                    full_think = "".join(think_text_parts)
+                    summary = full_think[:80].replace("\n", " ")
+                    if len(full_think) > 80:
+                        summary += "..."
+                    if self._console is not None:
+                        self._console.print(
+                            f"[think_label]💭 Thought for {elapsed:.1f}s: {summary}[/think_label]"
+                        )
+                    else:
+                        print(f"  💭 Thought for {elapsed:.1f}s: {summary}")
+                    think_start_time = None
 
-            elif event.type == "thought":
-                self._print_thought(event.content)
+                elif event.type == "stream_delta":
+                    if not first_content_received:
+                        first_content_received = True
+                        self._spinner.stop()
+                        spinner_active = False
+                        if self._console is not None:
+                            self._console.print()
+                            self._console.print("[ai_label]AI>[/ai_label]", end=" ")
+                        else:
+                            print("\nAI> ", end="", flush=True)
+                    sys.stdout.write(event.content)
+                    sys.stdout.flush()
 
-            elif event.type == "tool_call":
-                if event.blocked:
-                    self._print_warning(f"Blocked: {event.content}")
-                else:
-                    self._print_tool_call(event.tool_name, event.tool_args)
+                elif event.type == "stream_end":
+                    if first_content_received:
+                        sys.stdout.write("\n")
+                        sys.stdout.flush()
+                    if spinner_active:
+                        self._spinner.stop()
+                        spinner_active = False
 
-            elif event.type == "tool_result":
-                result_str = str(event.tool_result) if event.tool_result is not None else event.content
-                is_error = isinstance(event.tool_result, dict) and "error" in event.tool_result
-                self._print_tool_result(event.tool_name, result_str, is_error)
+                elif event.type == "thought":
+                    pass
 
-            elif event.type == "final_answer":
-                if self._console is not None and event.content:
-                    try:
-                        self._console.print()
-                        self._console.print(Markdown(event.content))
-                        self._console.print()
-                    except Exception:
+                elif event.type == "tool_call":
+                    if event.blocked:
+                        self._print_warning(f"Blocked: {event.content}")
+                    else:
+                        self._spinner.start(f"Executing {event.tool_name}...")
+                        spinner_active = True
+                        self._print_tool_call(event.tool_name, event.tool_args)
+
+                elif event.type == "tool_result":
+                    self._spinner.stop()
+                    spinner_active = False
+                    result_str = str(event.tool_result) if event.tool_result is not None else event.content
+                    is_error = isinstance(event.tool_result, dict) and "error" in event.tool_result
+                    self._print_tool_result(event.tool_name, result_str, is_error)
+
+                elif event.type == "final_answer":
+                    if spinner_active:
+                        self._spinner.stop()
+                        spinner_active = False
+                    if self._console is not None and event.content:
+                        try:
+                            self._console.print()
+                            self._console.print(Markdown(event.content))
+                            self._console.print()
+                        except Exception:
+                            print(f"\n{event.content}\n")
+                    elif event.content:
                         print(f"\n{event.content}\n")
-                elif event.content:
-                    print(f"\n{event.content}\n")
 
-            elif event.type == "error":
-                self._print_error(event.content)
+                elif event.type == "error":
+                    if spinner_active:
+                        self._spinner.stop()
+                        spinner_active = False
+                    self._print_error(event.content)
 
-            elif event.type == "iteration_limit":
-                self._print_warning(event.content)
+                elif event.type == "iteration_limit":
+                    if spinner_active:
+                        self._spinner.stop()
+                        spinner_active = False
+                    self._print_warning(event.content)
+
+                elif event.type == "cancelled":
+                    if spinner_active:
+                        self._spinner.stop()
+                        spinner_active = False
+                    self._print_warning("Operation cancelled by user.")
+
+        except KeyboardInterrupt:
+            _cancel_handler()
+            if spinner_active:
+                self._spinner.stop()
+            self._print_warning("Operation interrupted.")
+        finally:
+            try:
+                loop.remove_signal_handler(signal.SIGINT)
+            except (NotImplementedError, OSError):
+                pass
+            if spinner_active:
+                self._spinner.stop()
 
     async def run(self) -> None:
         self._running = True

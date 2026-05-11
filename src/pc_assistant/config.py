@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 class AppConfig(BaseModel):
     llm_server_url: str = "http://127.0.0.1:8080"
     llm_model_name: str = ""
-    max_iterations: int = 15
+    max_iterations: int = 8
     max_tokens: int = 1024
     shell_timeout: int = 30
     context_window_budget: int = 4096

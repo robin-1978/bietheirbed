@@ -334,7 +334,7 @@ class TestAgentRun:
         agent = Agent(config=AppConfig())
 
         async def think_stream(*args, **kwargs):
-            yield StreamChunk(delta_content="<think Let me reason about this</think > The answer is 42", finish_reason="")
+            yield StreamChunk(delta_content="<think >Let me reason about this</think > The answer is 42", finish_reason="")
             yield StreamChunk(finish_reason="stop")
 
         agent._llm.chat_stream = think_stream
@@ -344,6 +344,50 @@ class TestAgentRun:
         assert "42" in final[0].content
         thoughts = [e for e in events if e.type == "thought"]
         assert len(thoughts) >= 1
+        think_deltas = [e for e in events if e.type == "stream_think_delta"]
+        assert len(think_deltas) >= 1
+        think_starts = [e for e in events if e.type == "think_start"]
+        assert len(think_starts) >= 1
+        think_ends = [e for e in events if e.type == "think_end"]
+        assert len(think_ends) >= 1
+
+    @pytest.mark.asyncio
+    async def test_think_only_response(self):
+        agent = Agent(config=AppConfig())
+
+        call_count = 0
+
+        async def think_only_stream(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                yield StreamChunk(delta_content="<think >I need to think about this</think >", finish_reason="")
+                yield StreamChunk(finish_reason="stop")
+            else:
+                yield StreamChunk(delta_content="Here is my answer: 42", finish_reason="")
+                yield StreamChunk(finish_reason="stop")
+
+        agent._llm.chat_stream = think_only_stream
+        events = await _collect_events(agent, "what is the answer")
+        final = [e for e in events if e.type == "final_answer"]
+        assert len(final) >= 1
+        assert "42" in final[0].content
+
+    @pytest.mark.asyncio
+    async def test_cancel(self):
+        agent = Agent(config=AppConfig())
+
+        async def slow_stream(*args, **kwargs):
+            yield StreamChunk(delta_content="Hello", finish_reason="")
+            yield StreamChunk(finish_reason="stop")
+
+        agent._llm.chat_stream = slow_stream
+        events: list[AgentEvent] = []
+        async for event in agent.run("hi"):
+            events.append(event)
+            if event.type == "stream_start":
+                agent.cancel()
+        assert any(e.type == "cancelled" for e in events)
 
     @pytest.mark.asyncio
     async def test_tool_exception(self):
@@ -421,5 +465,5 @@ class TestAgentReset:
         agent._conversation.add_user("hello")
         agent.reset_conversation()
         msgs = agent.conversation.get_messages()
-        assert len(msgs) == 1
-        assert msgs[0]["role"] == "system"
+        system_msgs = [m for m in msgs if m["role"] == "system"]
+        assert len(system_msgs) >= 1

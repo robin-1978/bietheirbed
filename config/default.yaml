@@ -1,6 +1,6 @@
 llm_server_url: "http://127.0.0.1:8080"
 llm_model_name: ""
-max_iterations: 15
+max_iterations: 8
 max_tokens: 1024
 shell_timeout: 30
 context_window_budget: 4096
