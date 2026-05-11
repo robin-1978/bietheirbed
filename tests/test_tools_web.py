@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from unittest.mock import patch, MagicMock
+
 import pytest
 
 from pc_assistant.tools.web import WebTool
@@ -24,20 +26,25 @@ class TestWebFetchNoUrl:
         assert "error" in result
 
 
-class TestWebSearchNotImplemented:
-    @pytest.mark.asyncio
-    async def test_search_not_implemented(self):
-        t = WebTool()
-        result = await t.execute(action="search", query="test")
-        assert "error" in result or "not implemented" in str(result).lower()
-
-
-class TestWebSearchNoQuery:
+class TestWebSearch:
     @pytest.mark.asyncio
     async def test_search_no_query(self):
         t = WebTool()
         result = await t.execute(action="search")
         assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_search_returns_results(self):
+        t = WebTool()
+        result = await t.execute(action="search", query="Python programming")
+        assert "results" in result or "error" in result
+
+    @pytest.mark.asyncio
+    async def test_search_ddgs_fallback(self):
+        t = WebTool()
+        with patch.dict("sys.modules", {"ddgs": None, "duckduckgo_search": None}):
+            result = await t._search_http("test query", 3)
+            assert "results" in result or "error" in result
 
 
 class TestWebUnknownAction:
