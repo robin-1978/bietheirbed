@@ -75,7 +75,7 @@ class LLMProvider:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.7,
-        max_tokens: int = 2048,
+        max_tokens: int = 1024,
         tool_choice: str | dict[str, Any] | None = None,
     ) -> LLMResponse:
         payload: dict[str, Any] = {
@@ -117,7 +117,7 @@ class LLMProvider:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.7,
-        max_tokens: int = 2048,
+        max_tokens: int = 1024,
         tool_choice: str | dict[str, Any] | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         payload: dict[str, Any] = {

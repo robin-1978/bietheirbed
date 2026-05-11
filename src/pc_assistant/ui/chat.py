@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import asyncio
 import json
-from typing import Any, Callable, Awaitable
+import re
+import sys
+from typing import Any, Callable
 
 from pc_assistant.config import AppConfig
 from pc_assistant.agent import Agent, AgentEvent
@@ -28,8 +29,8 @@ except ImportError:
 
 
 _WELCOME_ART = r"""
-  ____  _        _   _                ____           _
- |  _ \(_)      | | | |              |  _ \         | |
+  ____  _        _   _               ____           _
+ |  _ \(_)      | | | |             |  _ \         | |
  | |_) |_  ___  | |_| |__   ___ _ __| |_) | ___  __| |
  |  _ <| |/ _ \ | __| '_ \ / _ \ '__|  _ < / _ \/ _` |
  | |_) | |  __/ | |_| | | |  __/ |  | |_) |  __/ (_| |
@@ -44,6 +45,26 @@ _COMMANDS_HELP = """\
 /help           Show this help message
 /config         Show current configuration\
 """
+
+_THINK_OPEN_RE = re.compile(r"<think[^>]*>", re.IGNORECASE)
+_THINK_CLOSE_RE = re.compile(r"</think\s*>", re.IGNORECASE)
+
+
+def _strip_think_tags(text: str) -> tuple[str, str]:
+    thinking = ""
+    remaining = text
+    while True:
+        m_open = _THINK_OPEN_RE.search(remaining)
+        if m_open is None:
+            break
+        m_close = _THINK_CLOSE_RE.search(remaining, m_open.end())
+        if m_close is None:
+            thinking += remaining[m_open.end():]
+            remaining = remaining[:m_open.start()]
+            break
+        thinking += remaining[m_open.end():m_close.start()]
+        remaining = remaining[:m_open.start()] + remaining[m_close.end():]
+    return remaining.strip(), thinking.strip()
 
 
 class ChatUI:
@@ -66,6 +87,7 @@ class ChatUI:
                 "error": "red bold",
                 "warning": "yellow",
                 "prompt": "green bold",
+                "ai_label": "blue bold",
             })
             self._console = Console(theme=custom_theme)
         else:
@@ -108,14 +130,6 @@ class ChatUI:
         else:
             print(f"  ← {name}: {result[:200]}")
 
-    def _print_final_answer(self, content: str) -> None:
-        if self._console is not None:
-            self._console.print()
-            self._console.print(Markdown(content))
-            self._console.print()
-        else:
-            print(f"\n{content}\n")
-
     def _print_error(self, message: str) -> None:
         if self._console is not None:
             self._console.print(f"[error]✗ {message}[/error]")
@@ -149,26 +163,6 @@ class ChatUI:
                 return input("You> ").strip()
             except (EOFError, KeyboardInterrupt):
                 return None
-
-    def _confirm_action(self, title: str, details: str) -> bool:
-        if self._console is not None:
-            self._console.print(
-                Panel(
-                    details,
-                    title=f"[warning]⚠ {title}[/warning]",
-                    border_style="yellow",
-                    expand=False,
-                )
-            )
-        else:
-            print(f"\n⚠ {title}")
-            print(details)
-
-        try:
-            answer = input("Proceed? (y/n): ").strip().lower()
-            return answer in ("y", "yes")
-        except (EOFError, KeyboardInterrupt):
-            return False
 
     def _handle_user_command(self, command: str) -> bool:
         cmd = command.lower().strip()
@@ -277,12 +271,41 @@ class ChatUI:
             self._print_error("Agent not initialized.")
             return
 
+        streaming_text = ""
+        in_stream = False
+
         async for event in self._agent.run(user_input):
-            if event.type == "thought":
+            if event.type == "stream_start":
+                in_stream = True
+                streaming_text = ""
+                if self._console is not None:
+                    self._console.print()
+                    self._console.print("[ai_label]AI>[/ai_label]", end=" ")
+                else:
+                    print("\nAI> ", end="", flush=True)
+
+            elif event.type == "stream_delta":
+                in_stream = True
+                streaming_text += event.content
+                clean, _ = _strip_think_tags(streaming_text)
+                if clean or not streaming_text.startswith("<"):
+                    sys.stdout.write(event.content)
+                    sys.stdout.flush()
+
+            elif event.type == "stream_end":
+                if in_stream:
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                    in_stream = False
+
+            elif event.type == "thought":
                 self._print_thought(event.content)
 
             elif event.type == "tool_call":
-                self._print_tool_call(event.tool_name, event.tool_args)
+                if event.blocked:
+                    self._print_warning(f"Blocked: {event.content}")
+                else:
+                    self._print_tool_call(event.tool_name, event.tool_args)
 
             elif event.type == "tool_result":
                 result_str = str(event.tool_result) if event.tool_result is not None else event.content
@@ -290,7 +313,15 @@ class ChatUI:
                 self._print_tool_result(event.tool_name, result_str, is_error)
 
             elif event.type == "final_answer":
-                self._print_final_answer(event.content)
+                if self._console is not None and event.content:
+                    try:
+                        self._console.print()
+                        self._console.print(Markdown(event.content))
+                        self._console.print()
+                    except Exception:
+                        print(f"\n{event.content}\n")
+                elif event.content:
+                    print(f"\n{event.content}\n")
 
             elif event.type == "error":
                 self._print_error(event.content)

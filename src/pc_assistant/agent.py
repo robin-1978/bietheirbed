@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, AsyncGenerator, Callable
 
 from pydantic import BaseModel
@@ -11,9 +12,8 @@ from pc_assistant.context.system_prompt import build_system_prompt
 from pc_assistant.context.truncator import truncate_messages
 from pc_assistant.harness.audit import AuditLogger
 from pc_assistant.harness.limiter import RateLimiter
-from pc_assistant.harness.recovery import RecoveryManager
 from pc_assistant.harness.safety import SafetyChecker
-from pc_assistant.llm_provider import LLMProvider
+from pc_assistant.llm_provider import LLMProvider, LLMResponse
 from pc_assistant.logger import get_logger
 from pc_assistant.tools.application import ApplicationTool
 from pc_assistant.tools.clipboard import ClipboardTool
@@ -32,6 +32,27 @@ class AgentEvent(BaseModel):
     tool_result: Any = None
     blocked: bool = False
     iteration: int = 0
+
+
+_THINK_OPEN = re.compile(r"<think[^>]*>", re.IGNORECASE)
+_THINK_CLOSE = re.compile(r"</think\s*>", re.IGNORECASE)
+
+
+def _strip_think_tags(text: str) -> tuple[str, str]:
+    thinking = ""
+    remaining = text
+    while True:
+        m_open = _THINK_OPEN.search(remaining)
+        if m_open is None:
+            break
+        m_close = _THINK_CLOSE.search(remaining, m_open.end())
+        if m_close is None:
+            thinking += remaining[m_open.end():]
+            remaining = remaining[:m_open.start()]
+            break
+        thinking += remaining[m_open.end():m_close.start()]
+        remaining = remaining[:m_open.start()] + remaining[m_close.end():]
+    return remaining.strip(), thinking.strip()
 
 
 class Agent:
@@ -53,7 +74,6 @@ class Agent:
             protected_paths=self._config.protected_paths,
         )
         self._limiter = RateLimiter()
-        self._recovery = RecoveryManager()
         self._audit = AuditLogger()
         self._confirm_callback = confirm_callback
         self._system_prompt = build_system_prompt()
@@ -86,6 +106,25 @@ class Agent:
     def register_tool(self, tool: Any) -> None:
         self._registry.register(tool)
 
+    async def _call_llm_with_retry(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        max_retries: int = 3,
+    ) -> LLMResponse | None:
+        last_error: Exception | None = None
+        for attempt in range(max_retries):
+            try:
+                return await self._llm.chat(messages, tools=tools)
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    import asyncio
+                    await asyncio.sleep(0.5 * (2 ** attempt))
+        if last_error is not None:
+            return LLMResponse(content=f"LLM request failed after retries: {last_error}", finish_reason="error")
+        return None
+
     async def run(self, user_input: str) -> AsyncGenerator[AgentEvent, None]:
         if not self._limiter.is_allowed("agent"):
             yield AgentEvent(
@@ -103,130 +142,176 @@ class Agent:
             )
             tools = self._registry.all_schemas() if len(self._registry) > 0 else None
 
-            response = await self._recovery.execute_with_recovery(
-                self._llm.chat, messages, tools=tools
-            )
+            full_content = ""
+            tool_calls_from_stream: list[dict[str, Any]] = []
+            finish_reason = ""
+            stream_had_error = False
 
-            if response.finish_reason == "error":
-                yield AgentEvent(
-                    type="error",
-                    content=response.content,
-                    iteration=iteration,
-                )
-                return
+            yield AgentEvent(type="stream_start", iteration=iteration)
 
-            self._conversation.add_assistant(
-                response.content,
-                tool_calls=response.tool_calls if response.tool_calls else None,
-            )
-
-            if response.content:
-                yield AgentEvent(
-                    type="thought",
-                    content=response.content,
-                    iteration=iteration,
-                )
-
-            if not response.tool_calls:
-                yield AgentEvent(
-                    type="final_answer",
-                    content=response.content,
-                    iteration=iteration,
-                )
-                return
-
-            for tool_call in response.tool_calls:
-                func = tool_call.get("function", {})
-                tool_name = func.get("name", "")
-                arguments = func.get("arguments", {})
-                tool_call_id = tool_call.get("id", "")
-
-                if isinstance(arguments, str):
-                    try:
-                        arguments = json.loads(arguments)
-                    except (json.JSONDecodeError, TypeError):
-                        arguments = {}
-
-                if not isinstance(arguments, dict):
-                    arguments = {}
-
-                safety_result = self._safety.check_tool_call(tool_name, arguments)
-
-                if not safety_result:
-                    user_confirmed = False
-                    if self._confirm_callback is not None:
-                        try:
-                            user_confirmed = self._confirm_callback(tool_name, arguments)
-                        except Exception:
-                            user_confirmed = False
-
-                    if user_confirmed:
-                        self._audit.log(
-                            action="tool_call_confirmed",
-                            tool=tool_name,
-                            parameters=arguments,
-                            allowed=True,
-                            reason=f"User confirmed override of: {safety_result.reason}",
-                        )
-                    else:
-                        self._audit.log(
-                            action="tool_call_blocked",
-                            tool=tool_name,
-                            parameters=arguments,
-                            allowed=False,
-                            reason=safety_result.reason,
-                        )
+            try:
+                async for chunk in self._llm.chat_stream(messages, tools=tools, max_tokens=self._config.max_tokens):
+                    if chunk.finish_reason == "error":
                         yield AgentEvent(
-                            type="tool_call",
-                            tool_name=tool_name,
-                            tool_args=arguments,
-                            blocked=True,
-                            content=safety_result.reason,
+                            type="error",
+                            content=chunk.delta_content,
                             iteration=iteration,
                         )
-                        self._conversation.add_tool_result(
-                            tool_call_id,
-                            f"Blocked: {safety_result.reason}",
-                        )
-                        continue
+                        stream_had_error = True
+                        break
 
+                    if chunk.delta_content:
+                        full_content += chunk.delta_content
+                        clean, thinking = _strip_think_tags(full_content)
+                        if thinking:
+                            pass
+                        if clean:
+                            yield AgentEvent(
+                                type="stream_delta",
+                                content=chunk.delta_content,
+                                iteration=iteration,
+                            )
+
+                    if chunk.delta_tool_calls:
+                        tool_calls_from_stream = chunk.delta_tool_calls
+
+                    if chunk.finish_reason:
+                        finish_reason = chunk.finish_reason
+            except Exception as e:
                 yield AgentEvent(
-                    type="tool_call",
-                    tool_name=tool_name,
-                    tool_args=arguments,
+                    type="error",
+                    content=f"LLM stream error: {e}",
+                    iteration=iteration,
+                )
+                stream_had_error = True
+
+            if stream_had_error:
+                return
+
+            clean_content, thinking_content = _strip_think_tags(full_content)
+
+            yield AgentEvent(type="stream_end", iteration=iteration)
+
+            if thinking_content:
+                yield AgentEvent(
+                    type="thought",
+                    content=thinking_content,
                     iteration=iteration,
                 )
 
-                self._audit.log(
-                    action="tool_call",
-                    tool=tool_name,
-                    parameters=arguments,
-                    allowed=True,
+            if tool_calls_from_stream:
+                self._conversation.add_assistant(
+                    clean_content or full_content,
+                    tool_calls=tool_calls_from_stream if tool_calls_from_stream else None,
                 )
+                for tool_call in tool_calls_from_stream:
+                    func = tool_call.get("function", {})
+                    tool_name = func.get("name", "")
+                    arguments = func.get("arguments", {})
+                    tool_call_id = tool_call.get("id", "")
 
-                try:
-                    result = await self._registry.execute(tool_name, **arguments)
-                    result_str = str(result)
-                    self._conversation.add_tool_result(tool_call_id, result_str)
+                    if isinstance(arguments, str):
+                        try:
+                            arguments = json.loads(arguments)
+                        except (json.JSONDecodeError, TypeError):
+                            arguments = {}
+
+                    if not isinstance(arguments, dict):
+                        arguments = {}
+
+                    safety_result = self._safety.check_tool_call(tool_name, arguments)
+
+                    if not safety_result:
+                        user_confirmed = False
+                        if self._confirm_callback is not None:
+                            try:
+                                user_confirmed = self._confirm_callback(tool_name, arguments)
+                            except Exception:
+                                user_confirmed = False
+
+                        if user_confirmed:
+                            self._audit.log(
+                                action="tool_call_confirmed",
+                                tool=tool_name,
+                                parameters=arguments,
+                                allowed=True,
+                                reason=f"User confirmed override of: {safety_result.reason}",
+                            )
+                        else:
+                            self._audit.log(
+                                action="tool_call_blocked",
+                                tool=tool_name,
+                                parameters=arguments,
+                                allowed=False,
+                                reason=safety_result.reason,
+                            )
+                            yield AgentEvent(
+                                type="tool_call",
+                                tool_name=tool_name,
+                                tool_args=arguments,
+                                blocked=True,
+                                content=safety_result.reason,
+                                iteration=iteration,
+                            )
+                            self._conversation.add_tool_result(
+                                tool_call_id,
+                                f"Blocked: {safety_result.reason}",
+                            )
+                            continue
+
                     yield AgentEvent(
-                        type="tool_result",
+                        type="tool_call",
                         tool_name=tool_name,
                         tool_args=arguments,
-                        tool_result=result,
-                        content=result_str,
                         iteration=iteration,
                     )
-                except Exception as e:
-                    error_msg = f"Error: {e}"
-                    self._conversation.add_tool_result(tool_call_id, error_msg)
+
+                    self._audit.log(
+                        action="tool_call",
+                        tool=tool_name,
+                        parameters=arguments,
+                        allowed=True,
+                    )
+
+                    try:
+                        result = await self._registry.execute(tool_name, **arguments)
+                        result_str = str(result)
+                        self._conversation.add_tool_result(tool_call_id, result_str)
+                        yield AgentEvent(
+                            type="tool_result",
+                            tool_name=tool_name,
+                            tool_args=arguments,
+                            tool_result=result,
+                            content=result_str,
+                            iteration=iteration,
+                        )
+                    except Exception as e:
+                        error_msg = f"Error: {e}"
+                        self._conversation.add_tool_result(tool_call_id, error_msg)
+                        yield AgentEvent(
+                            type="tool_result",
+                            tool_name=tool_name,
+                            tool_args=arguments,
+                            tool_result={"error": str(e)},
+                            content=error_msg,
+                            iteration=iteration,
+                        )
+            else:
+                self._conversation.add_assistant(clean_content or full_content)
+
+                if clean_content:
                     yield AgentEvent(
-                        type="tool_result",
-                        tool_name=tool_name,
-                        tool_args=arguments,
-                        tool_result={"error": str(e)},
-                        content=error_msg,
+                        type="final_answer",
+                        content=clean_content,
                         iteration=iteration,
                     )
+                else:
+                    yield AgentEvent(
+                        type="final_answer",
+                        content=full_content,
+                        iteration=iteration,
+                    )
+                return
 
         yield AgentEvent(
             type="iteration_limit",

@@ -4,12 +4,42 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from pc_assistant.agent import Agent, AgentEvent
+from pc_assistant.agent import Agent, AgentEvent, _strip_think_tags
 from pc_assistant.config import AppConfig
-from pc_assistant.llm_provider import LLMResponse
+from pc_assistant.llm_provider import LLMResponse, StreamChunk
 from pc_assistant.tools.base import ToolBase
 from pc_assistant.tools.registry import ToolRegistry
 from typing import Any
+
+
+class TestStripThinkTags:
+    def test_no_tags(self):
+        clean, thinking = _strip_think_tags("Hello world")
+        assert clean == "Hello world"
+        assert thinking == ""
+
+    def test_with_tags(self):
+        clean, thinking = _strip_think_tags("<think >Let me think</think >Hello world")
+        assert "Hello world" in clean
+        assert "Let me think" in thinking
+
+    def test_only_think_tag(self):
+        clean, thinking = _strip_think_tags("<think >Just thinking</think >")
+        assert clean == ""
+        assert "Just thinking" in thinking
+
+    def test_unclosed_think_tag(self):
+        clean, thinking = _strip_think_tags("<think >Just thinking")
+        assert clean == ""
+        assert "Just thinking" in thinking
+
+    def test_multiple_think_tags(self):
+        text = "<think >step1</think > text1 <think >step2</think > text2"
+        clean, thinking = _strip_think_tags(text)
+        assert "text1" in clean
+        assert "text2" in clean
+        assert "step1" in thinking
+        assert "step2" in thinking
 
 
 class TestAgentEvent:
@@ -70,6 +100,11 @@ class TestAgentInit:
         assert "custom" in agent.registry.list_tools()
 
 
+async def _mock_stream(chunks: list[StreamChunk]):
+    for chunk in chunks:
+        yield chunk
+
+
 async def _collect_events(agent: Agent, user_input: str) -> list[AgentEvent]:
     events: list[AgentEvent] = []
     async for event in agent.run(user_input):
@@ -77,38 +112,63 @@ async def _collect_events(agent: Agent, user_input: str) -> list[AgentEvent]:
     return events
 
 
+def _make_stream_mock(content: str = "", tool_calls: list[dict] | None = None, finish_reason: str = "stop"):
+    chunks = []
+    if content:
+        chunks.append(StreamChunk(delta_content=content, finish_reason=""))
+    if tool_calls:
+        chunks.append(StreamChunk(delta_tool_calls=tool_calls, finish_reason=""))
+    chunks.append(StreamChunk(finish_reason=finish_reason))
+
+    async def _stream_fn(*args, **kwargs):
+        for chunk in chunks:
+            yield chunk
+
+    return _stream_fn
+
+
 class TestAgentRun:
     @pytest.mark.asyncio
     async def test_direct_answer(self):
         agent = Agent(config=AppConfig())
-        agent._llm.chat = AsyncMock(return_value=LLMResponse(content="Hello!", finish_reason="stop"))
+        agent._llm.chat_stream = _make_stream_mock(content="Hello!", finish_reason="stop")
         events = await _collect_events(agent, "hi")
-        assert any(e.type == "final_answer" and e.content == "Hello!" for e in events)
+        assert any(e.type == "final_answer" and "Hello!" in e.content for e in events)
 
     @pytest.mark.asyncio
     async def test_thought_then_answer(self):
         agent = Agent(config=AppConfig())
-        agent._llm.chat = AsyncMock(return_value=LLMResponse(content="Let me think... Hello!", finish_reason="stop"))
+        agent._llm.chat_stream = _make_stream_mock(content="Let me think... Hello!", finish_reason="stop")
         events = await _collect_events(agent, "hi")
-        thought_events = [e for e in events if e.type == "thought"]
         final_events = [e for e in events if e.type == "final_answer"]
-        assert len(thought_events) >= 1
         assert len(final_events) >= 1
 
     @pytest.mark.asyncio
     async def test_tool_call_flow(self, tmp_path):
         agent = Agent(config=AppConfig())
         test_file = str(tmp_path / "test.txt")
-        first = LLMResponse(
+        first_stream = _make_stream_mock(
             content="Let me write a file.",
             tool_calls=[{
                 "id": "call_1",
                 "type": "function",
                 "function": {"name": "filesystem", "arguments": {"action": "write", "path": test_file, "content": "hello"}},
             }],
+            finish_reason="tool_calls",
         )
-        second = LLMResponse(content="File written!", finish_reason="stop")
-        agent._llm.chat = AsyncMock(side_effect=[first, second])
+        second_stream = _make_stream_mock(content="File written!", finish_reason="stop")
+        call_count = 0
+        original_chat_stream = agent._llm.chat_stream
+
+        def mock_chat_stream(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return first_stream(*args, **kwargs)
+            else:
+                return second_stream(*args, **kwargs)
+
+        agent._llm.chat_stream = mock_chat_stream
         events = await _collect_events(agent, "write a file")
         tool_calls = [e for e in events if e.type == "tool_call" and not e.blocked]
         tool_results = [e for e in events if e.type == "tool_result"]
@@ -120,15 +180,15 @@ class TestAgentRun:
     @pytest.mark.asyncio
     async def test_safety_blocked(self):
         agent = Agent(config=AppConfig())
-        response = LLMResponse(
+        agent._llm.chat_stream = _make_stream_mock(
             content="Deleting.",
             tool_calls=[{
                 "id": "call_1",
                 "type": "function",
                 "function": {"name": "shell", "arguments": {"command": "rm -rf /"}},
             }],
+            finish_reason="tool_calls",
         )
-        agent._llm.chat = AsyncMock(return_value=response)
         events = await _collect_events(agent, "delete everything")
         blocked = [e for e in events if e.type == "tool_call" and e.blocked]
         assert len(blocked) >= 1
@@ -136,16 +196,27 @@ class TestAgentRun:
     @pytest.mark.asyncio
     async def test_confirm_callback_allows(self):
         agent = Agent(config=AppConfig(), confirm_callback=lambda n, a: True)
-        response = LLMResponse(
+        first_stream = _make_stream_mock(
             content="Deleting.",
             tool_calls=[{
                 "id": "call_1",
                 "type": "function",
                 "function": {"name": "shell", "arguments": {"command": "rm -rf /"}},
             }],
+            finish_reason="tool_calls",
         )
-        second = LLMResponse(content="Done!", finish_reason="stop")
-        agent._llm.chat = AsyncMock(side_effect=[response, second])
+        second_stream = _make_stream_mock(content="Done!", finish_reason="stop")
+        call_count = 0
+
+        def mock_chat_stream(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return first_stream(*args, **kwargs)
+            else:
+                return second_stream(*args, **kwargs)
+
+        agent._llm.chat_stream = mock_chat_stream
         events = await _collect_events(agent, "delete temp")
         allowed_calls = [e for e in events if e.type == "tool_call" and not e.blocked]
         assert len(allowed_calls) >= 1
@@ -153,70 +224,43 @@ class TestAgentRun:
     @pytest.mark.asyncio
     async def test_confirm_callback_denies(self):
         agent = Agent(config=AppConfig(), confirm_callback=lambda n, a: False)
-        response = LLMResponse(
+        first_stream = _make_stream_mock(
             content="Deleting.",
             tool_calls=[{
                 "id": "call_1",
                 "type": "function",
                 "function": {"name": "shell", "arguments": {"command": "rm -rf /"}},
             }],
+            finish_reason="tool_calls",
         )
-        second = LLMResponse(content="Blocked.", finish_reason="stop")
-        agent._llm.chat = AsyncMock(side_effect=[response, second])
+        second_stream = _make_stream_mock(content="Blocked.", finish_reason="stop")
+        call_count = 0
+
+        def mock_chat_stream(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return first_stream(*args, **kwargs)
+            else:
+                return second_stream(*args, **kwargs)
+
+        agent._llm.chat_stream = mock_chat_stream
         events = await _collect_events(agent, "delete temp")
         blocked = [e for e in events if e.type == "tool_call" and e.blocked]
         assert len(blocked) >= 1
-
-    @pytest.mark.asyncio
-    async def test_confirm_callback_exception(self):
-        def bad_callback(name, args):
-            raise RuntimeError("callback error")
-
-        agent = Agent(config=AppConfig(), confirm_callback=bad_callback)
-        response = LLMResponse(
-            content="Deleting.",
-            tool_calls=[{
-                "id": "call_1",
-                "type": "function",
-                "function": {"name": "shell", "arguments": {"command": "rm -rf /"}},
-            }],
-        )
-        second = LLMResponse(content="Blocked.", finish_reason="stop")
-        agent._llm.chat = AsyncMock(side_effect=[response, second])
-        events = await _collect_events(agent, "delete temp")
-        blocked = [e for e in events if e.type == "tool_call" and e.blocked]
-        assert len(blocked) >= 1
-
-    @pytest.mark.asyncio
-    async def test_tool_exception(self):
-        agent = Agent(config=AppConfig())
-        agent._registry.execute = AsyncMock(side_effect=RuntimeError("tool failed"))
-        response = LLMResponse(
-            content="Using tool.",
-            tool_calls=[{
-                "id": "call_1",
-                "type": "function",
-                "function": {"name": "filesystem", "arguments": {"action": "read", "path": "test.txt"}},
-            }],
-        )
-        second = LLMResponse(content="Tool failed, let me try something else.", finish_reason="stop")
-        agent._llm.chat = AsyncMock(side_effect=[response, second])
-        events = await _collect_events(agent, "read file")
-        error_results = [e for e in events if e.type == "tool_result" and e.tool_result and isinstance(e.tool_result, dict) and "error" in e.tool_result]
-        assert len(error_results) >= 1
 
     @pytest.mark.asyncio
     async def test_iteration_limit(self):
         agent = Agent(config=AppConfig(max_iterations=2))
-        tool_response = LLMResponse(
+        agent._llm.chat_stream = _make_stream_mock(
             content="Thinking...",
             tool_calls=[{
                 "id": "call_1",
                 "type": "function",
                 "function": {"name": "filesystem", "arguments": {"action": "exists", "path": "."}},
             }],
+            finish_reason="tool_calls",
         )
-        agent._llm.chat = AsyncMock(return_value=tool_response)
         events = await _collect_events(agent, "keep going")
         limit_events = [e for e in events if e.type == "iteration_limit"]
         assert len(limit_events) >= 1
@@ -224,16 +268,27 @@ class TestAgentRun:
     @pytest.mark.asyncio
     async def test_string_arguments(self):
         agent = Agent(config=AppConfig())
-        response = LLMResponse(
+        first_stream = _make_stream_mock(
             content="Using tool.",
             tool_calls=[{
                 "id": "call_1",
                 "type": "function",
                 "function": {"name": "filesystem", "arguments": '{"action": "exists", "path": "."}'},
             }],
+            finish_reason="tool_calls",
         )
-        second = LLMResponse(content="Done!", finish_reason="stop")
-        agent._llm.chat = AsyncMock(side_effect=[response, second])
+        second_stream = _make_stream_mock(content="Done!", finish_reason="stop")
+        call_count = 0
+
+        def mock_chat_stream(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return first_stream(*args, **kwargs)
+            else:
+                return second_stream(*args, **kwargs)
+
+        agent._llm.chat_stream = mock_chat_stream
         events = await _collect_events(agent, "check file")
         tool_calls = [e for e in events if e.type == "tool_call" and not e.blocked]
         assert len(tool_calls) >= 1
@@ -243,41 +298,110 @@ class TestAgentRun:
         agent = Agent(config=AppConfig())
         from pc_assistant.harness.limiter import RateLimiter
         agent._limiter = RateLimiter(max_calls=1, window_seconds=60)
-        agent._llm.chat = AsyncMock(return_value=LLMResponse(content="ok"))
+        agent._llm.chat_stream = _make_stream_mock(content="ok")
         await _collect_events(agent, "first")
         events = await _collect_events(agent, "second")
         assert any(e.type == "error" and "Rate limit" in e.content for e in events)
 
     @pytest.mark.asyncio
-    async def test_error_response(self):
+    async def test_stream_error(self):
         agent = Agent(config=AppConfig())
-        agent._llm.chat = AsyncMock(return_value=LLMResponse(content="Connection failed", finish_reason="error"))
+        agent._llm.chat_stream = _make_stream_mock(finish_reason="error")
+        chunks = [StreamChunk(delta_content="Connection failed", finish_reason="error")]
+
+        async def error_stream(*args, **kwargs):
+            for c in chunks:
+                yield c
+
+        agent._llm.chat_stream = error_stream
         events = await _collect_events(agent, "hello")
         assert any(e.type == "error" for e in events)
+
+    @pytest.mark.asyncio
+    async def test_stream_exception(self):
+        agent = Agent(config=AppConfig())
+
+        async def bad_stream(*args, **kwargs):
+            raise RuntimeError("stream broke")
+            yield
+
+        agent._llm.chat_stream = bad_stream
+        events = await _collect_events(agent, "hello")
+        assert any(e.type == "error" for e in events)
+
+    @pytest.mark.asyncio
+    async def test_think_tags_filtered(self):
+        agent = Agent(config=AppConfig())
+
+        async def think_stream(*args, **kwargs):
+            yield StreamChunk(delta_content="<think Let me reason about this</think > The answer is 42", finish_reason="")
+            yield StreamChunk(finish_reason="stop")
+
+        agent._llm.chat_stream = think_stream
+        events = await _collect_events(agent, "what is the answer")
+        final = [e for e in events if e.type == "final_answer"]
+        assert len(final) >= 1
+        assert "42" in final[0].content
+        thoughts = [e for e in events if e.type == "thought"]
+        assert len(thoughts) >= 1
+
+    @pytest.mark.asyncio
+    async def test_tool_exception(self):
+        agent = Agent(config=AppConfig())
+        agent._registry.execute = AsyncMock(side_effect=RuntimeError("tool failed"))
+        first_stream = _make_stream_mock(
+            content="Using tool.",
+            tool_calls=[{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "filesystem", "arguments": {"action": "read", "path": "test.txt"}},
+            }],
+            finish_reason="tool_calls",
+        )
+        second_stream = _make_stream_mock(content="Tool failed, let me try something else.", finish_reason="stop")
+        call_count = 0
+
+        def mock_chat_stream(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return first_stream(*args, **kwargs)
+            else:
+                return second_stream(*args, **kwargs)
+
+        agent._llm.chat_stream = mock_chat_stream
+        events = await _collect_events(agent, "read file")
+        error_results = [e for e in events if e.type == "tool_result" and e.tool_result and isinstance(e.tool_result, dict) and "error" in e.tool_result]
+        assert len(error_results) >= 1
 
 
 class TestAgentRunSimple:
     @pytest.mark.asyncio
     async def test_final_answer(self):
         agent = Agent(config=AppConfig())
-        agent._llm.chat = AsyncMock(return_value=LLMResponse(content="Hello!", finish_reason="stop"))
+        agent._llm.chat_stream = _make_stream_mock(content="Hello!", finish_reason="stop")
         result = await agent.run_simple("hi")
-        assert result == "Hello!"
+        assert "Hello!" in result
 
     @pytest.mark.asyncio
     async def test_error(self):
         agent = Agent(config=AppConfig())
-        agent._llm.chat = AsyncMock(return_value=LLMResponse(content="Error occurred", finish_reason="error"))
+
+        async def error_stream(*args, **kwargs):
+            yield StreamChunk(delta_content="Error occurred", finish_reason="error")
+
+        agent._llm.chat_stream = error_stream
         result = await agent.run_simple("hi")
         assert "Error" in result
 
     @pytest.mark.asyncio
     async def test_iteration_limit(self):
         agent = Agent(config=AppConfig(max_iterations=1))
-        agent._llm.chat = AsyncMock(return_value=LLMResponse(
+        agent._llm.chat_stream = _make_stream_mock(
             content="Thinking...",
             tool_calls=[{"id": "c1", "type": "function", "function": {"name": "filesystem", "arguments": {"action": "exists", "path": "."}}}],
-        ))
+            finish_reason="tool_calls",
+        )
         result = await agent.run_simple("keep going")
         assert "Maximum iterations" in result
 

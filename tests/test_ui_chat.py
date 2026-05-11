@@ -54,7 +54,7 @@ class TestChatUIPrint:
     def test_print_final_answer(self, capsys):
         ui = ChatUI(config=AppConfig())
         ui._console = None
-        ui._print_final_answer("Here is your answer")
+        ui._print("Here is your answer")
         captured = capsys.readouterr()
         assert "Here is your answer" in captured.out
 
