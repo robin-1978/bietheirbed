@@ -1,0 +1,311 @@
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from pc_assistant.harness.audit import AuditLogger
+from pc_assistant.harness.limiter import RateLimiter
+from pc_assistant.harness.recovery import RecoveryManager
+from pc_assistant.harness.safety import SafetyChecker, SafetyCheckResult
+
+
+class TestSafetyCheckResult:
+    def test_allowed_true(self):
+        r = SafetyCheckResult(True)
+        assert bool(r) is True
+
+    def test_allowed_false(self):
+        r = SafetyCheckResult(False, "bad")
+        assert bool(r) is False
+        assert r.reason == "bad"
+
+    def test_default_reason(self):
+        r = SafetyCheckResult(True)
+        assert r.reason == ""
+
+
+class TestSafetyChecker:
+    def test_default_dangerous_patterns(self):
+        s = SafetyChecker()
+        assert not s.check_command("rm -rf /").allowed
+        assert not s.check_command("format C:").allowed
+        assert not s.check_command("shutdown /s").allowed
+        assert not s.check_command("taskkill /f /pid 123").allowed
+        assert not s.check_command("rd /s C:\\temp").allowed
+        assert not s.check_command("rmdir /s C:\\temp").allowed
+        assert not s.check_command("reg delete HKLM\\Software").allowed
+        assert not s.check_command("net user admin").allowed
+        assert not s.check_command("bcdedit /set").allowed
+        assert not s.check_command("diskpart").allowed
+
+    def test_custom_dangerous_commands(self):
+        s = SafetyChecker(dangerous_commands=["my_dangerous_cmd"])
+        assert not s.check_command("my_dangerous_cmd").allowed
+        assert s.check_command("safe_command").allowed
+
+    def test_safe_commands(self):
+        s = SafetyChecker()
+        assert s.check_command("dir").allowed
+        assert s.check_command("echo hello").allowed
+        assert s.check_command("Get-Process").allowed
+
+    def test_protected_path(self, tmp_path):
+        protected = str(tmp_path / "secret")
+        Path(protected).mkdir()
+        s = SafetyChecker(protected_paths=[protected])
+        assert not s.check_path(protected).allowed
+        assert not s.check_path(str(Path(protected) / "file.txt")).allowed
+
+    def test_allowed_path(self, tmp_path):
+        s = SafetyChecker(protected_paths=[str(tmp_path / "secret")])
+        assert s.check_path(str(tmp_path / "public")).allowed
+
+    def test_invalid_path(self):
+        s = SafetyChecker()
+        result = s.check_path("\x00invalid")
+        assert isinstance(result, SafetyCheckResult)
+
+    def test_is_blocked_shell(self):
+        s = SafetyChecker()
+        result = s.is_blocked("shell", {"command": "rm -rf /"})
+        assert not result.allowed
+
+    def test_is_blocked_shell_safe(self):
+        s = SafetyChecker()
+        result = s.is_blocked("shell", {"command": "echo hello"})
+        assert result.allowed
+
+    def test_is_blocked_filesystem_protected(self, tmp_path):
+        protected = str(tmp_path / "secret")
+        Path(protected).mkdir()
+        s = SafetyChecker(protected_paths=[protected])
+        result = s.is_blocked("filesystem", {"action": "read", "path": protected})
+        assert not result.allowed
+
+    def test_is_blocked_filesystem_safe(self):
+        s = SafetyChecker()
+        result = s.is_blocked("filesystem", {"action": "read", "path": "C:\\Users\\test.txt"})
+        assert result.allowed
+
+    def test_is_blocked_process_kill(self):
+        s = SafetyChecker()
+        result = s.is_blocked("process", {"action": "kill", "pid": 123})
+        assert not result.allowed
+
+    def test_is_blocked_process_list(self):
+        s = SafetyChecker()
+        result = s.is_blocked("process", {"action": "list"})
+        assert result.allowed
+
+    def test_is_blocked_unknown_tool(self):
+        s = SafetyChecker()
+        result = s.is_blocked("unknown_tool", {})
+        assert result.allowed
+
+    def test_needs_confirmation_shell_delete(self):
+        s = SafetyChecker()
+        needs, reason = s.needs_confirmation("shell", {"command": "delete file.txt"})
+        assert needs is True
+
+    def test_needs_confirmation_shell_safe(self):
+        s = SafetyChecker()
+        needs, reason = s.needs_confirmation("shell", {"command": "echo hello"})
+        assert needs is False
+
+    def test_needs_confirmation_shell_move(self):
+        s = SafetyChecker()
+        needs, reason = s.needs_confirmation("shell", {"command": "move a.txt b.txt"})
+        assert needs is True
+
+    def test_needs_confirmation_shell_rename(self):
+        s = SafetyChecker()
+        needs, reason = s.needs_confirmation("shell", {"command": "rename old.txt new.txt"})
+        assert needs is True
+
+    def test_needs_confirmation_filesystem_delete(self):
+        s = SafetyChecker()
+        needs, reason = s.needs_confirmation("filesystem", {"action": "delete", "path": "C:\\test.txt"})
+        assert needs is True
+
+    def test_needs_confirmation_filesystem_write(self):
+        s = SafetyChecker()
+        needs, reason = s.needs_confirmation("filesystem", {"action": "write", "path": "C:\\test.txt"})
+        assert needs is True
+
+    def test_needs_confirmation_filesystem_read(self):
+        s = SafetyChecker()
+        needs, reason = s.needs_confirmation("filesystem", {"action": "read", "path": "C:\\test.txt"})
+        assert needs is False
+
+    def test_needs_confirmation_filesystem_outside_working_dir(self, tmp_path):
+        s = SafetyChecker(working_directory=str(tmp_path))
+        needs, reason = s.needs_confirmation("filesystem", {"action": "read", "path": "C:\\outside\\file.txt"})
+        assert needs is True
+
+    def test_needs_confirmation_filesystem_inside_working_dir(self, tmp_path):
+        s = SafetyChecker(working_directory=str(tmp_path))
+        needs, reason = s.needs_confirmation("filesystem", {"action": "read", "path": str(tmp_path / "file.txt")})
+        assert needs is False
+
+    def test_needs_confirmation_process_kill(self):
+        s = SafetyChecker()
+        needs, reason = s.needs_confirmation("process", {"action": "kill"})
+        assert needs is True
+
+    def test_needs_confirmation_process_list(self):
+        s = SafetyChecker()
+        needs, reason = s.needs_confirmation("process", {"action": "list"})
+        assert needs is False
+
+    def test_needs_confirmation_unknown_tool(self):
+        s = SafetyChecker()
+        needs, reason = s.needs_confirmation("unknown", {})
+        assert needs is False
+
+    def test_check_tool_call_delegates_to_is_blocked(self):
+        s = SafetyChecker()
+        result = s.check_tool_call("shell", {"command": "rm -rf /"})
+        assert not result.allowed
+
+
+class TestRateLimiter:
+    def test_allows_within_limit(self):
+        r = RateLimiter(max_calls=5, window_seconds=60)
+        assert r.is_allowed("key1") is True
+
+    def test_remaining(self):
+        r = RateLimiter(max_calls=5, window_seconds=60)
+        r.is_allowed("key1")
+        assert r.remaining("key1") == 4
+
+    def test_blocks_over_limit(self):
+        r = RateLimiter(max_calls=2, window_seconds=60)
+        assert r.is_allowed("key1") is True
+        assert r.is_allowed("key1") is True
+        assert r.is_allowed("key1") is False
+
+    def test_separate_keys(self):
+        r = RateLimiter(max_calls=1, window_seconds=60)
+        assert r.is_allowed("key1") is True
+        assert r.is_allowed("key2") is True
+
+    def test_reset_key(self):
+        r = RateLimiter(max_calls=1, window_seconds=60)
+        r.is_allowed("key1")
+        r.reset("key1")
+        assert r.is_allowed("key1") is True
+
+    def test_reset_all(self):
+        r = RateLimiter(max_calls=1, window_seconds=60)
+        r.is_allowed("key1")
+        r.is_allowed("key2")
+        r.reset()
+        assert r.is_allowed("key1") is True
+        assert r.is_allowed("key2") is True
+
+
+class TestRecoveryManager:
+    @pytest.mark.asyncio
+    async def test_success(self):
+        m = RecoveryManager(max_retries=3, base_delay=0.01)
+        func = AsyncMock(return_value="ok")
+        result = await m.execute_with_recovery(func)
+        assert result == "ok"
+
+    @pytest.mark.asyncio
+    async def test_retry_then_succeed(self):
+        m = RecoveryManager(max_retries=3, base_delay=0.01)
+        func = AsyncMock(side_effect=[Exception("fail"), "ok"])
+        result = await m.execute_with_recovery(func)
+        assert result == "ok"
+
+    @pytest.mark.asyncio
+    async def test_all_fail(self):
+        m = RecoveryManager(max_retries=2, base_delay=0.01)
+        func = AsyncMock(side_effect=Exception("always fail"))
+        with pytest.raises(Exception, match="always fail"):
+            await m.execute_with_recovery(func)
+
+    @pytest.mark.asyncio
+    async def test_with_args(self):
+        m = RecoveryManager(max_retries=1, base_delay=0.01)
+        func = AsyncMock(return_value="result")
+        result = await m.execute_with_recovery(func, "arg1", key="val")
+        func.assert_called_once_with("arg1", key="val")
+
+
+class TestAuditLogger:
+    def test_log_and_get_entries(self, tmp_path):
+        a = AuditLogger(log_dir=str(tmp_path / "audit"))
+        a.log(action="test_action", tool="test_tool", parameters={"k": "v"})
+        entries = a.get_entries()
+        assert len(entries) == 1
+        assert entries[0]["action"] == "test_action"
+        assert entries[0]["tool"] == "test_tool"
+
+    def test_log_blocked(self, tmp_path):
+        a = AuditLogger(log_dir=str(tmp_path / "audit"))
+        a.log(action="blocked_action", allowed=False, reason="dangerous")
+        entries = a.get_entries()
+        assert entries[0]["allowed"] is False
+        assert entries[0]["reason"] == "dangerous"
+
+    def test_query_by_action(self, tmp_path):
+        a = AuditLogger(log_dir=str(tmp_path / "audit"))
+        a.log(action="action_a")
+        a.log(action="action_b")
+        a.log(action="action_a")
+        results = a.query(action="action_a")
+        assert len(results) == 2
+
+    def test_query_by_tool(self, tmp_path):
+        a = AuditLogger(log_dir=str(tmp_path / "audit"))
+        a.log(action="call", tool="filesystem")
+        a.log(action="call", tool="shell")
+        a.log(action="call", tool="filesystem")
+        results = a.query(tool="filesystem")
+        assert len(results) == 2
+
+    def test_query_by_since(self, tmp_path):
+        a = AuditLogger(log_dir=str(tmp_path / "audit"))
+        a.log(action="old_action")
+        from datetime import timedelta
+        future = datetime.now(tz=timezone.utc) + timedelta(hours=1)
+        results = a.query(since=future)
+        assert len(results) == 0
+
+    def test_session_summary(self, tmp_path):
+        a = AuditLogger(log_dir=str(tmp_path / "audit"))
+        a.log(action="tool_call", tool="filesystem", allowed=True)
+        a.log(action="tool_call_blocked", tool="shell", allowed=False)
+        a.log(action="tool_call", tool="filesystem", allowed=True, result="Error: something")
+        summary = a.session_summary()
+        assert summary["total_entries"] == 3
+        assert summary["action_counts"]["tool_call"] == 2
+        assert summary["tool_counts"]["filesystem"] == 2
+        assert summary["blocked_count"] == 1
+        assert summary["error_count"] == 1
+
+    def test_clear(self, tmp_path):
+        a = AuditLogger(log_dir=str(tmp_path / "audit"))
+        a.log(action="test")
+        a.clear()
+        assert len(a.get_entries()) == 0
+
+    def test_result_summary_truncation(self, tmp_path):
+        a = AuditLogger(log_dir=str(tmp_path / "audit"))
+        long_result = "x" * 1000
+        a.log(action="test", result=long_result)
+        entries = a.get_entries()
+        assert len(entries[0]["result_summary"]) <= 500
+
+    def test_query_no_filters(self, tmp_path):
+        a = AuditLogger(log_dir=str(tmp_path / "audit"))
+        a.log(action="a1")
+        a.log(action="a2")
+        results = a.query()
+        assert len(results) == 2

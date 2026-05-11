@@ -1,0 +1,18 @@
+llm_server_url: "http://127.0.0.1:8080"
+llm_model_name: ""
+max_iterations: 15
+shell_timeout: 30
+context_window_budget: 4096
+dangerous_commands:
+  - "rm -rf /"
+  - "del /s /q C:\\"
+  - "format"
+  - "shutdown"
+  - "mkfs"
+protected_paths:
+  - "/etc/passwd"
+  - "/etc/shadow"
+  - "C:\\Windows\\System32"
+  - "C:\\Windows\\SysWOW64"
+log_file: "logs/pc_assistant.json"
+working_directory: "."
