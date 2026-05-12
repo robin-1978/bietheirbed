@@ -361,6 +361,12 @@ class Agent:
 
                     if chunk.finish_reason:
                         finish_reason = chunk.finish_reason
+
+                    if chunk.usage:
+                        prompt_tokens = chunk.usage.get("prompt_tokens") or chunk.usage.get("input_tokens") or 0
+                        completion_tokens = chunk.usage.get("completion_tokens") or chunk.usage.get("output_tokens") or 0
+                        self._total_prompt_tokens += int(prompt_tokens)
+                        self._total_completion_tokens += int(completion_tokens)
             except Exception as e:
                 error_msg = str(e)
                 if "timeout" in error_msg.lower() or "timed out" in error_msg.lower():

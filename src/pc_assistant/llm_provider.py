@@ -25,6 +25,7 @@ class StreamChunk(BaseModel):
     delta_thinking: str = ""
     delta_tool_calls: list[dict[str, Any]] = []
     finish_reason: str = ""
+    usage: dict[str, Any] = {}
 
 
 class LLMProvider:
@@ -215,6 +216,7 @@ class LLMProvider:
                 delta_content=result.content,
                 delta_tool_calls=result.tool_calls,
                 finish_reason=result.finish_reason,
+                usage=result.usage,
             )
             return
 
@@ -232,6 +234,7 @@ class LLMProvider:
 
         accumulated_tool_calls: dict[int, dict[str, Any]] = {}
         last_finish_reason = ""
+        last_usage: dict[str, Any] = {}
 
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
@@ -262,12 +265,14 @@ class LLMProvider:
                                     delta_content="",
                                     delta_tool_calls=final_tool_calls,
                                     finish_reason=last_finish_reason,
+                                    usage=last_usage,
                                 )
                             else:
                                 yield StreamChunk(
                                     delta_content="",
                                     delta_tool_calls=[],
                                     finish_reason=last_finish_reason,
+                                    usage=last_usage,
                                 )
                             return
 
@@ -275,6 +280,10 @@ class LLMProvider:
                             chunk_data = json.loads(data_str)
                         except json.JSONDecodeError:
                             continue
+
+                        chunk_usage = chunk_data.get("usage")
+                        if chunk_usage and isinstance(chunk_usage, dict):
+                            last_usage = chunk_usage
 
                         choices = chunk_data.get("choices", [])
                         if not choices:
