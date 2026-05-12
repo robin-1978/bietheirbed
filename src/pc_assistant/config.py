@@ -27,6 +27,27 @@ class AppConfig(BaseModel):
     log_file: str = "logs/pc_assistant.json"
     working_directory: str = Field(default_factory=os.getcwd)
 
+    def masked_api_key(self) -> str:
+        if not self.llm_api_key or len(self.llm_api_key) < 8:
+            return "***" if self.llm_api_key else ""
+        return self.llm_api_key[:4] + "****" + self.llm_api_key[-4:]
+
+    def set_field(self, field_name: str, value: str) -> bool:
+        type_map: dict[str, type] = {
+            "llm_provider": str, "llm_server_url": str, "llm_model_name": str,
+            "llm_api_key": str, "llm_api_base": str,
+            "llm_temperature": float, "llm_timeout": float,
+            "max_iterations": int, "max_tokens": int, "shell_timeout": int,
+            "context_window_budget": int, "log_file": str, "working_directory": str,
+        }
+        if field_name not in type_map:
+            return False
+        try:
+            setattr(self, field_name, type_map[field_name](value))
+            return True
+        except (ValueError, TypeError):
+            return False
+
 
 def _load_yaml(path: Path) -> dict[str, Any]:
     if not path.exists():

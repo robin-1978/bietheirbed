@@ -16,6 +16,14 @@ class SafetyCheckResult:
         return self.allowed
 
 
+_INJECTION_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r";\s*(rm|del|format|shutdown|reboot|mkfs)\b", re.IGNORECASE),
+    re.compile(r"\|\s*(rm|del|format|shutdown|reboot)\b", re.IGNORECASE),
+    re.compile(r"`[^`]*(rm|del|format|shutdown)[^`]*`", re.IGNORECASE),
+    re.compile(r"\$\([^)]*(rm|del|format|shutdown)[^)]*\)", re.IGNORECASE),
+    re.compile(r"&&\s*(rm|del|format|shutdown|reboot|mkfs)\b", re.IGNORECASE),
+]
+
 _CONFIRMATION_COMMAND_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\bdelete\b", re.IGNORECASE),
     re.compile(r"\bremove-item\b", re.IGNORECASE),
@@ -50,6 +58,9 @@ class SafetyChecker:
         for dangerous in self._dangerous_commands:
             if dangerous.lower() in cmd_lower:
                 return SafetyCheckResult(False, f"Blocked dangerous command pattern: {dangerous}")
+        for pattern in _INJECTION_PATTERNS:
+            if pattern.search(command):
+                return SafetyCheckResult(False, f"Blocked potential command injection: {pattern.pattern}")
         return SafetyCheckResult(True)
 
     def check_path(self, path: str, write: bool = False) -> SafetyCheckResult:

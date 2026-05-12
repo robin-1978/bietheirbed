@@ -107,12 +107,13 @@ class ConversationManager:
         self._messages = [summary_msg] + recent_messages
 
     def estimate_token_count(self) -> int:
+        from pc_assistant.context.truncator import _estimate_tokens
         total = 0
         for msg in self._messages:
-            total += max(1, len(msg.content) // 4)
+            total += _estimate_tokens(msg.content)
             if msg.tool_calls is not None:
                 for tc in msg.tool_calls:
-                    total += max(1, len(str(tc)) // 4)
+                    total += _estimate_tokens(str(tc))
         return total
 
     def clear(self) -> None:

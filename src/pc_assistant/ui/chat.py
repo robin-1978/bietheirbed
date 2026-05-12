@@ -51,7 +51,8 @@ _COMMANDS_HELP = """\
 /tools          List available tools
 /status         Show detailed agent status
 /help           Show this help message
-/config         Show current configuration\
+/config         Show current configuration
+/config set key=value   Set a config field at runtime\
 """
 
 _SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -282,6 +283,19 @@ class ChatUI:
             return True
 
         if cmd == "/config":
+            parts = command.strip().split(None, 2)
+            if len(parts) >= 3 and parts[1].lower() == "set":
+                field_name = parts[2].split("=", 1)[0].strip() if "=" in parts[2] else ""
+                field_value = parts[2].split("=", 1)[1].strip() if "=" in parts[2] else ""
+                if not field_name or not field_value:
+                    self._print_warning("Usage: /config set key=value")
+                    return True
+                if self._config.set_field(field_name, field_value):
+                    display_val = "****" if field_name == "llm_api_key" else field_value
+                    self._print(f"[dim]Set {field_name} = {display_val}[/dim]" if self._console else f"Set {field_name}")
+                else:
+                    self._print_warning(f"Unknown or invalid config field: {field_name}")
+                return True
             if self._console is not None:
                 table = Table(title="Configuration", show_lines=True)
                 table.add_column("Key", style="bold")
@@ -289,6 +303,7 @@ class ChatUI:
                 table.add_row("Provider", self._config.llm_provider)
                 table.add_row("LLM Server", self._config.llm_server_url)
                 table.add_row("Model", self._config.llm_model_name or "(not set)")
+                table.add_row("API Key", self._config.masked_api_key())
                 table.add_row("Max Iterations", str(self._config.max_iterations))
                 table.add_row("Shell Timeout", str(self._config.shell_timeout))
                 table.add_row("Context Budget", str(self._config.context_window_budget))
@@ -299,6 +314,7 @@ class ChatUI:
                 print(f"  Provider:    {self._config.llm_provider}")
                 print(f"  LLM Server:  {self._config.llm_server_url}")
                 print(f"  Model:       {self._config.llm_model_name or '(not set)'}")
+                print(f"  API Key:     {self._config.masked_api_key()}")
                 print(f"  Max Iters:   {self._config.max_iterations}")
                 print(f"  Working Dir: {self._config.working_directory}")
             return True

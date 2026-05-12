@@ -4,7 +4,11 @@ from typing import Any
 
 
 def _estimate_tokens(text: str) -> int:
-    return max(1, len(text) // 4)
+    if not text:
+        return 1
+    cjk = sum(1 for c in text if '一' <= c <= '鿿' or '぀' <= c <= 'ヿ' or '가' <= c <= '힯')
+    non_cjk = len(text) - cjk
+    return max(1, cjk + non_cjk // 4)
 
 
 def _truncate_tool_output(msg: dict[str, Any], max_chars: int) -> dict[str, Any]:
