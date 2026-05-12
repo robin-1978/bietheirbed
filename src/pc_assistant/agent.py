@@ -166,6 +166,7 @@ class Agent:
             provider=self._config.llm_provider,
             api_key=self._config.llm_api_key,
             api_base=self._config.llm_api_base,
+            timeout=self._config.llm_timeout,
         )
         self._conversation = ConversationManager()
         self._memory = UserMemory()
@@ -350,9 +351,16 @@ class Agent:
                     if chunk.finish_reason:
                         finish_reason = chunk.finish_reason
             except Exception as e:
+                error_msg = str(e)
+                if "timeout" in error_msg.lower() or "timed out" in error_msg.lower():
+                    error_msg = (
+                        f"LLM request timed out after {self._config.llm_timeout}s. "
+                        "Possible causes: prompt too long, model is busy, or server overloaded. "
+                        "You can increase PC_LLM_TIMEOUT in config if needed."
+                    )
                 yield AgentEvent(
                     type="error",
-                    content=f"LLM stream error: {e}",
+                    content=f"LLM stream error: {error_msg}",
                     iteration=iteration,
                 )
                 stream_had_error = True

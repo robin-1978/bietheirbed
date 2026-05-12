@@ -17,6 +17,7 @@ class AppConfig(BaseModel):
     llm_api_key: str = ""
     llm_api_base: str = ""
     llm_temperature: float = 0.7
+    llm_timeout: float = 120.0
     max_iterations: int = 8
     max_tokens: int = 1024
     shell_timeout: int = 30
@@ -43,6 +44,7 @@ def _env_overrides() -> dict[str, Any]:
         "PC_LLM_API_KEY": ("llm_api_key", str),
         "PC_LLM_API_BASE": ("llm_api_base", str),
         "PC_LLM_TEMPERATURE": ("llm_temperature", float),
+        "PC_LLM_TIMEOUT": ("llm_timeout", float),
         "PC_MAX_ITERATIONS": ("max_iterations", int),
         "PC_SHELL_TIMEOUT": ("shell_timeout", int),
         "PC_CONTEXT_WINDOW_BUDGET": ("context_window_budget", int),
