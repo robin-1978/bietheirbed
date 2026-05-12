@@ -511,3 +511,18 @@ class TestAgentGetStatus:
         assert status["provider"] == "llamacpp"
         assert status["total_tokens"] == 0
         assert "filesystem" in status["tools"]
+
+    @pytest.mark.asyncio
+    async def test_token_counting(self):
+        agent = Agent(config=AppConfig())
+
+        async def stream_with_usage(*args, **kwargs):
+            yield StreamChunk(delta_content="Hello!", finish_reason="")
+            yield StreamChunk(finish_reason="stop", usage={"prompt_tokens": 50, "completion_tokens": 20, "total_tokens": 70})
+
+        agent._llm.chat_stream = stream_with_usage
+        await _collect_events(agent, "hi")
+        status = agent.get_status()
+        assert status["total_prompt_tokens"] == 50
+        assert status["total_completion_tokens"] == 20
+        assert status["total_tokens"] == 70

@@ -134,25 +134,39 @@ class ChatUI:
 
     def _print_tool_call(self, name: str, arguments: dict[str, Any]) -> None:
         if self._console is not None:
-            args_str = json.dumps(arguments, indent=2, ensure_ascii=False)
-            self._console.print(
-                Panel(
-                    f"[tool_args]{args_str}[/tool_args]",
-                    title=f"[tool_name]🔧 {name}[/tool_name]",
-                    border_style="cyan",
-                    expand=False,
+            items = list(arguments.items())
+            if len(items) <= 2:
+                summary_parts = [f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in items]
+                summary = ", ".join(summary_parts)
+                self._console.print(
+                    Text(f"  🔧 ", style="tool_name") + Text(name, style="tool_name") + Text(f" → {summary}", style="tool_args")
                 )
-            )
+            else:
+                summary_parts = [f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in items[:2]]
+                summary = ", ".join(summary_parts)
+                remaining = len(items) - 2
+                self._console.print(
+                    Text(f"  🔧 ", style="tool_name") + Text(name, style="tool_name") + Text(f" → {summary}", style="tool_args")
+                )
+                self._console.print(
+                    Text(f"    ({remaining} more params)", style="dim")
+                )
         else:
             print(f"  [tool: {name}] {json.dumps(arguments, ensure_ascii=False)}")
 
     def _print_tool_result(self, name: str, result: str, is_error: bool = False) -> None:
         if self._console is not None:
-            style = "error" if is_error else "tool_result"
-            truncated = result[:500] + "..." if len(result) > 500 else result
-            self._console.print(
-                Text(f"  ← {name}: {truncated}", style=style)
-            )
+            truncated = result[:500]
+            if len(result) > 500:
+                truncated += f"... ({len(result)} chars total)"
+            if is_error:
+                self._console.print(
+                    Text(f"  ❌ {name} → {truncated}", style="error")
+                )
+            else:
+                self._console.print(
+                    Text(f"  ✅ {name} → {truncated}", style="tool_result")
+                )
         else:
             print(f"  ← {name}: {result[:200]}")
 
@@ -179,9 +193,27 @@ class ChatUI:
         turns = status.get("conversation_turns", 0)
         total_tokens = status.get("total_tokens", 0)
         memory_items = status.get("memory_items", 0)
-        status_text = f" {connected} {provider} | {model} | {agent_status} | turns: {turns} | tokens: {total_tokens} | 🧠 {memory_items}"
+        if total_tokens >= 1_000_000:
+            token_str = f"{total_tokens / 1_000_000:.1f}M"
+        elif total_tokens >= 1000:
+            token_str = f"{total_tokens / 1000:.1f}k"
+        else:
+            token_str = str(total_tokens)
+        status_colors = {"ready": "green", "thinking": "blue", "ready": "green"}
+        current_status = agent_status
+        for prefix in ("executing_", "thinking"):
+            if current_status.startswith(prefix):
+                current_status = prefix.rstrip("_")
+                break
+        status_color = status_colors.get(current_status, "yellow")
         self._console.print(
-            Panel(status_text, style="status_bar", border_style="dim", expand=False)
+            Text(
+                f" {connected} {provider} | {model} | ",
+                style="dim",
+            ) + Text(current_status, style=f"bold {status_color}") + Text(
+                f" | turns: {turns} | tokens: {token_str} | 🧠 {memory_items}",
+                style="dim",
+            )
         )
 
     def _show_welcome(self) -> None:
@@ -455,9 +487,11 @@ class ChatUI:
                         spinner_active = False
                         if self._console is not None:
                             self._console.print()
+                            self._console.print(Text("─" * 40, style="dim"))
                             self._console.print("[ai_label]AI>[/ai_label]", end=" ")
                         else:
-                            print("\nAI> ", end="", flush=True)
+                            print("\n" + "─" * 40)
+                            print("AI> ", end="", flush=True)
                     stream_content_parts.append(event.content)
                     sys.stdout.write(event.content)
                     sys.stdout.flush()

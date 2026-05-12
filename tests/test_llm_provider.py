@@ -510,3 +510,43 @@ class TestLLMProviderChatStream:
             assert len(chunks) == 1
             assert len(chunks[0].delta_tool_calls) == 1
             assert chunks[0].delta_tool_calls[0]["function"]["name"] == "test"
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_with_usage(self):
+        p = LLMProvider()
+        sse_lines = [
+            'data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":""}]}',
+            'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}',
+            'data: [DONE]',
+        ]
+
+        async def mock_aiter_lines():
+            for line in sse_lines:
+                yield line
+
+        class MockStreamResponse:
+            def raise_for_status(self):
+                pass
+            def aiter_lines(self):
+                return mock_aiter_lines()
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class MockClient:
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+            def stream(self, *args, **kwargs):
+                return MockStreamResponse()
+
+        with patch("pc_assistant.llm_provider.httpx.AsyncClient", return_value=MockClient()):
+            chunks = []
+            async for chunk in p.chat_stream([{"role": "user", "content": "hi"}]):
+                chunks.append(chunk)
+            final_chunks = [c for c in chunks if c.usage]
+            assert len(final_chunks) >= 1
+            assert final_chunks[0].usage.get("prompt_tokens") == 10
+            assert final_chunks[0].usage.get("completion_tokens") == 5
