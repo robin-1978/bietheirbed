@@ -26,6 +26,7 @@ from pc_assistant.tools.registry import ToolRegistry
 from pc_assistant.tools.shell import ShellTool
 from pc_assistant.tools.system import SystemTool
 from pc_assistant.tools.web import WebTool
+from pc_assistant.tools.memory_tool import MemoryTool
 
 
 class AgentEvent(BaseModel):
@@ -233,6 +234,7 @@ class Agent:
             WebTool(),
             SystemTool(),
             ClipboardTool(),
+            MemoryTool(memory=self._memory),
         ]
         for tool in builtin_tools:
             self._registry.register(tool)
@@ -278,10 +280,6 @@ class Agent:
         self._cancelled = False
         self._current_status = "thinking"
         self._conversation.add_user(user_input)
-
-        extracted = self._memory.extract_from_text(user_input)
-        for key, value, category, source in extracted:
-            self._memory.store(key, value, category=category, source=source)
 
         memory_context = self._memory.build_context_string()
         if memory_context:

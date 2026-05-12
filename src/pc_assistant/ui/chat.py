@@ -471,11 +471,8 @@ class ChatUI:
                         else:
                             print("\nAI> ", end="", flush=True)
                     stream_content_parts.append(event.content)
-                    if self._console is not None:
-                        self._console.print(event.content, end="", highlight=False)
-                    else:
-                        sys.stdout.write(event.content)
-                        sys.stdout.flush()
+                    sys.stdout.write(event.content)
+                    sys.stdout.flush()
 
                 elif event.type == "stream_end":
                     if first_content_received:
@@ -492,12 +489,14 @@ class ChatUI:
                     pass
 
                 elif event.type == "tool_call":
+                    self._spinner.stop()
+                    spinner_active = False
                     if event.blocked:
                         self._print_warning(f"Blocked: {event.content}")
                     else:
+                        self._print_tool_call(event.tool_name, event.tool_args)
                         self._spinner.start(f"Executing {event.tool_name}...")
                         spinner_active = True
-                        self._print_tool_call(event.tool_name, event.tool_args)
 
                 elif event.type == "tool_result":
                     self._spinner.stop()
