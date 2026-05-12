@@ -106,7 +106,6 @@ class ChatUI:
         self._cancelled = False
         self._spinner = _Spinner()
         self._think_content = ""
-        self._think_live: Live | None = None
         if _HAS_RICH:
             custom_theme = Theme({
                 "thought": "dim italic",
@@ -394,9 +393,6 @@ class ChatUI:
                 if self._cancelled:
                     self._spinner.stop()
                     spinner_active = False
-                    if self._think_live is not None:
-                        self._think_live.stop()
-                        self._think_live = None
                     self._print_warning("Operation cancelled.")
                     break
 
@@ -411,52 +407,28 @@ class ChatUI:
                     self._think_content = ""
                     self._spinner.stop()
                     spinner_active = False
-                    if self._console is not None and _HAS_RICH:
-                        panel = Panel(
-                            Text("💭 Thinking...", style="dim italic"),
-                            border_style="blue",
-                            width=80,
-                            padding=(0, 1),
-                        )
-                        self._think_live = Live(panel, console=self._console, refresh_per_second=8, transient=True)
-                        self._think_live.start()
+                    if self._console is not None:
+                        self._console.print()
+                        self._console.print("[think_label]  💭 Thinking...[/think_label]")
+                        sys.stdout.write("\033[2m\033[3m")
+                        sys.stdout.flush()
                     else:
                         print("\n  💭 Thinking...")
 
                 elif event.type == "stream_think_delta":
                     self._think_content += event.content
-                    if self._think_live is not None and self._console is not None:
-                        display_text = self._think_content[-300:]
-                        panel = Panel(
-                            Text(display_text, style="dim italic"),
-                            border_style="blue",
-                            width=80,
-                            padding=(0, 1),
-                        )
-                        self._think_live.update(panel)
+                    sys.stdout.write(event.content)
+                    sys.stdout.flush()
 
                 elif event.type == "think_end":
-                    if self._think_live is not None:
-                        self._think_live.stop()
-                        self._think_live = None
+                    sys.stdout.write("\033[0m")
+                    sys.stdout.flush()
                     elapsed = time.time() - think_start_time if think_start_time else 0
-                    summary = self._think_content[:100].replace("\n", " ").strip()
-                    if len(self._think_content) > 100:
-                        summary += "..."
                     if self._console is not None:
-                        if summary:
-                            panel = Panel(
-                                Text(summary, style="dim italic"),
-                                title=f"🧠 Thought {elapsed:.1f}s",
-                                border_style="dim blue",
-                                width=80,
-                                padding=(0, 1),
-                            )
-                            self._console.print(panel)
-                        else:
-                            self._console.print(f"[think_label]🧠 Thought {elapsed:.1f}s[/think_label]")
+                        self._console.print()
+                        self._console.print(f"[think_label]  🧠 Thought {elapsed:.1f}s[/think_label]")
                     else:
-                        print(f"  🧠 Thought {elapsed:.1f}s: {summary}")
+                        print(f"\n  🧠 Thought {elapsed:.1f}s")
                     self._think_content = ""
                     think_start_time = None
 
@@ -521,9 +493,6 @@ class ChatUI:
                     if spinner_active:
                         self._spinner.stop()
                         spinner_active = False
-                    if self._think_live is not None:
-                        self._think_live.stop()
-                        self._think_live = None
                     self._print_error(event.content)
 
                 elif event.type == "iteration_limit":
@@ -536,18 +505,12 @@ class ChatUI:
                     if spinner_active:
                         self._spinner.stop()
                         spinner_active = False
-                    if self._think_live is not None:
-                        self._think_live.stop()
-                        self._think_live = None
                     self._print_warning("Operation cancelled by user.")
 
         except KeyboardInterrupt:
             _cancel_handler()
             if spinner_active:
                 self._spinner.stop()
-            if self._think_live is not None:
-                self._think_live.stop()
-                self._think_live = None
             self._print_warning("Operation interrupted.")
         finally:
             try:
@@ -556,9 +519,6 @@ class ChatUI:
                 pass
             if spinner_active:
                 self._spinner.stop()
-            if self._think_live is not None:
-                self._think_live.stop()
-                self._think_live = None
 
     async def run(self) -> None:
         self._running = True

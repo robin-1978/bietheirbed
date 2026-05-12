@@ -316,6 +316,7 @@ class Agent:
             finish_reason = ""
             stream_had_error = False
             think_parser = _ThinkStreamParser()
+            thinking_from_field = False
 
             yield AgentEvent(type="stream_start", iteration=iteration)
 
@@ -334,6 +335,16 @@ class Agent:
                         )
                         stream_had_error = True
                         break
+
+                    if chunk.delta_thinking:
+                        if not thinking_from_field:
+                            thinking_from_field = True
+                            yield AgentEvent(type="think_start", iteration=iteration)
+                        yield AgentEvent(
+                            type="stream_think_delta",
+                            content=chunk.delta_thinking,
+                            iteration=iteration,
+                        )
 
                     if chunk.delta_content:
                         full_content += chunk.delta_content
@@ -374,6 +385,9 @@ class Agent:
                 yield AgentEvent(type=evt_type, content=evt_content, iteration=iteration)
 
             if think_parser.in_think:
+                yield AgentEvent(type="think_end", content="", iteration=iteration)
+
+            if thinking_from_field:
                 yield AgentEvent(type="think_end", content="", iteration=iteration)
 
             clean_content, thinking_content = _strip_think_tags(full_content)

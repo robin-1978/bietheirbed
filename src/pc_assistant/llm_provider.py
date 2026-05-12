@@ -22,6 +22,7 @@ class LLMResponse(BaseModel):
 
 class StreamChunk(BaseModel):
     delta_content: str = ""
+    delta_thinking: str = ""
     delta_tool_calls: list[dict[str, Any]] = []
     finish_reason: str = ""
 
@@ -284,6 +285,7 @@ class LLMProvider:
                             last_finish_reason = finish_reason
 
                         delta_content = delta.get("content", "") or ""
+                        delta_thinking = delta.get("reasoning_content", "") or delta.get("thinking", "") or ""
 
                         delta_tool_call_list = delta.get("tool_calls", [])
                         delta_tool_calls: list[dict[str, Any]] = []
@@ -308,9 +310,10 @@ class LLMProvider:
                             if func_delta.get("arguments"):
                                 acc["function"]["arguments"] += func_delta["arguments"]
 
-                        if delta_content or delta_tool_call_list:
+                        if delta_content or delta_thinking or delta_tool_call_list:
                             yield StreamChunk(
                                 delta_content=delta_content,
+                                delta_thinking=delta_thinking,
                                 delta_tool_calls=delta_tool_calls,
                                 finish_reason="",
                             )
