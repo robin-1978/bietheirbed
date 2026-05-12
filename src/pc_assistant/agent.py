@@ -386,6 +386,8 @@ class Agent:
                 self._current_status = "ready"
                 return
 
+            self._connected = True
+
             remaining_events = think_parser.flush()
             for evt_type, evt_content in remaining_events:
                 yield AgentEvent(type=evt_type, content=evt_content, iteration=iteration)
