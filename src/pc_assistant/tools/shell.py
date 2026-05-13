@@ -7,6 +7,9 @@ from pc_assistant.platform_ import get_shell_command
 from pc_assistant.tools.base import ToolBase
 
 
+_DEFAULT_TIMEOUT = 30
+
+
 class ShellTool(ToolBase):
     name = "shell"
     description = "Execute shell commands with timeout and safety checks"
@@ -18,9 +21,9 @@ class ShellTool(ToolBase):
         if not command:
             return {"error": "No command provided"}
         try:
-            timeout_val = int(timeout) if timeout is not None else None
+            timeout_val = int(timeout) if timeout is not None else _DEFAULT_TIMEOUT
         except (ValueError, TypeError):
-            timeout_val = None
+            timeout_val = _DEFAULT_TIMEOUT
         return await self._run(command, timeout_val, cwd)
 
     def schema(self) -> dict[str, Any]:

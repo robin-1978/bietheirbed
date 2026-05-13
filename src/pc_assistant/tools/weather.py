@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import httpx
 from typing import Any
 
 from pc_assistant.tools.base import ToolBase
@@ -15,12 +16,7 @@ class WeatherTool(ToolBase):
         if not location:
             return {"error": "No location provided"}
         try:
-            import httpx
-
-            if forecast == "forecast":
-                url = f"https://wttr.in/{location}?format=j1"
-            else:
-                url = f"https://wttr.in/{location}?format=j1"
+            url = f"https://wttr.in/{location}?format=j1"
             headers = {"User-Agent": "curl/7.68.0"}
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.get(url, headers=headers)

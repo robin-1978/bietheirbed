@@ -173,11 +173,11 @@ class Agent:
         )
         self._conversation = ConversationManager()
         self._memory = UserMemory()
-        self._registry = ToolRegistry()
         self._safety = SafetyChecker(
             dangerous_commands=self._config.dangerous_commands,
             protected_paths=self._config.protected_paths,
         )
+        self._registry = ToolRegistry(safety=self._safety)
         self._limiter = RateLimiter()
         self._audit = AuditLogger()
         self._confirm_callback = confirm_callback
@@ -626,4 +626,9 @@ class Agent:
         self._system_prompt = build_system_prompt(
             working_directory=self._config.working_directory,
         )
-        self._conversation.set_system_context(self._system_prompt)
+        memory_context = self._memory.build_context_string()
+        if memory_context:
+            full_system = self._system_prompt + "\n\n" + memory_context
+        else:
+            full_system = self._system_prompt
+        self._conversation.set_system_context(full_system)

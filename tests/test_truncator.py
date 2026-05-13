@@ -7,7 +7,7 @@ from pc_assistant.context.truncator import _estimate_tokens, truncate_messages, 
 
 class TestEstimateTokens:
     def test_empty_string(self):
-        assert _estimate_tokens("") == 1
+        assert _estimate_tokens("") == 0
 
     def test_english_text(self):
         result = _estimate_tokens("Hello world this is a test")

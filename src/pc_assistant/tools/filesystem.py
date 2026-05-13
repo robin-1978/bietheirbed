@@ -8,6 +8,9 @@ from typing import Any
 from pc_assistant.tools.base import ToolBase
 
 
+_MAX_FILE_SIZE = 1_048_576
+
+
 class FilesystemTool(ToolBase):
     name = "filesystem"
     description = "Read, write, list, and manage files and directories"
@@ -56,18 +59,25 @@ class FilesystemTool(ToolBase):
                 return {"error": f"Path does not exist: {path}"}
             if p.is_dir():
                 return {"error": f"Path is a directory, not a file: {path}"}
+            file_size = p.stat().st_size
+            if file_size > _MAX_FILE_SIZE:
+                content = p.read_text(encoding="utf-8", errors="replace")[:_MAX_FILE_SIZE]
+                return {"content": content, "size": file_size, "truncated": True, "max_size": _MAX_FILE_SIZE}
             content = p.read_text(encoding="utf-8")
-            return {"content": content, "size": p.stat().st_size}
+            return {"content": content, "size": file_size}
         except Exception as e:
             return {"error": str(e)}
 
     def _write(self, path: str, kwargs: dict[str, Any]) -> dict[str, Any]:
         content = kwargs.get("content", "")
         try:
+            content_bytes = content.encode("utf-8")
+            if len(content_bytes) > _MAX_FILE_SIZE:
+                return {"error": f"Content exceeds maximum size of {_MAX_FILE_SIZE} bytes"}
             p = Path(path)
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(content, encoding="utf-8")
-            return {"success": True, "bytes_written": len(content.encode("utf-8"))}
+            return {"success": True, "bytes_written": len(content_bytes)}
         except Exception as e:
             return {"error": str(e)}
 

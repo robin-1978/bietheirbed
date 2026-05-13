@@ -199,7 +199,7 @@ class ChatUI:
             token_str = f"{total_tokens / 1000:.1f}k"
         else:
             token_str = str(total_tokens)
-        status_colors = {"ready": "green", "thinking": "blue", "ready": "green"}
+        status_colors = {"ready": "green", "thinking": "blue", "executing": "yellow"}
         current_status = agent_status
         for prefix in ("executing_", "thinking"):
             if current_status.startswith(prefix):

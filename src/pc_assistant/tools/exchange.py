@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import httpx
 from typing import Any
 
 from pc_assistant.tools.base import ToolBase
@@ -23,8 +24,6 @@ class ExchangeTool(ToolBase):
         base = (kwargs.get("base") or kwargs.get("from") or "USD").upper()
         target = (kwargs.get("target") or kwargs.get("to") or "CNY").upper()
         try:
-            import httpx
-
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(f"https://api.frankfurter.app/latest?from={base}&to={target}")
                 resp.raise_for_status()
@@ -52,8 +51,6 @@ class ExchangeTool(ToolBase):
         base = (kwargs.get("base") or kwargs.get("from") or "USD").upper()
         target = (kwargs.get("target") or kwargs.get("to") or "CNY").upper()
         try:
-            import httpx
-
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(f"https://api.frankfurter.app/latest?amount={amount}&from={base}&to={target}")
                 resp.raise_for_status()
@@ -76,8 +73,6 @@ class ExchangeTool(ToolBase):
 
     async def _list_currencies(self) -> dict[str, Any]:
         try:
-            import httpx
-
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get("https://api.frankfurter.app/currencies")
                 resp.raise_for_status()

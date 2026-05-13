@@ -62,7 +62,7 @@ class TestConversationManager:
         cm.set_system_context("sys")
         for i in range(10):
             cm.add_user(f"msg {i}")
-        assert len(cm) <= 5
+        assert len(cm) == 10
 
     def test_estimate_token_count(self):
         cm = ConversationManager()

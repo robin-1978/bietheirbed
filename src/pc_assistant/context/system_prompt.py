@@ -43,9 +43,14 @@ def build_system_prompt(
 
     parts.extend([
         "## Safety Rules",
-        "- Never execute commands that could harm the system",
-        "- Destructive operations (deleting files, etc.) require user confirmation",
+        "- Never execute destructive commands (e.g. rm -rf /, format C:, del /s /q on system directories)",
+        "- Never modify system files or registry without explicit user request",
+        "- Destructive operations (deleting files, overwriting data) require user confirmation",
         "- If a tool returns an error, try an alternative approach",
+        "",
+        "## Language",
+        "- Always reply in the same language as the user's input",
+        "- If the user writes in Chinese, reply in Chinese; if in English, reply in English",
         "",
         "## Memory Rules",
         "- Store personal info (name, location, preferences, habits) via `memory` tool (action=store).",

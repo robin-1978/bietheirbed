@@ -143,23 +143,7 @@ class TestConversationManager:
         cm.add_user("b")
         cm.add_user("c")
         cm.add_user("d")
-        assert len(cm) == 3
-
-    def test_summarize_old_messages(self):
-        cm = ConversationManager()
-        for i in range(15):
-            cm.add_user(f"message {i}")
-        cm.summarize_old_messages(keep_recent=5)
-        assert len(cm) <= 6
-        msgs = cm.get_messages()
-        assert msgs[0]["role"] == "user"
-        assert "Summary" in msgs[0]["content"] or "earlier" in msgs[0]["content"].lower()
-
-    def test_summarize_not_needed(self):
-        cm = ConversationManager()
-        cm.add_user("hello")
-        cm.summarize_old_messages(keep_recent=10)
-        assert len(cm) == 1
+        assert len(cm) == 4
 
     def test_estimate_token_count(self):
         cm = ConversationManager()

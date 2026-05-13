@@ -5,8 +5,15 @@ from typing import Any
 
 def _estimate_tokens(text: str) -> int:
     if not text:
-        return 1
-    cjk = sum(1 for c in text if '一' <= c <= '鿿' or '぀' <= c <= 'ヿ' or '가' <= c <= '힯')
+        return 0
+    cjk = sum(1 for c in text if (
+        '\u4e00' <= c <= '\u9fff'
+        or '\u3400' <= c <= '\u4dbf'
+        or '\U00020000' <= c <= '\U0002a6df'
+        or '\u3040' <= c <= '\u309f'
+        or '\u30a0' <= c <= '\u30ff'
+        or '\uac00' <= c <= '\ud7af'
+    ))
     non_cjk = len(text) - cjk
     return max(1, cjk + non_cjk // 4)
 
@@ -95,7 +102,7 @@ def truncate_messages(
                 snippet = msg.get("content", "")[:200]
                 summary_parts.append(f"[{msg.get('role', 'unknown')}] {snippet}")
         summary = "Summary of earlier messages:\n" + "\n".join(summary_parts)
-        summary_msg: dict[str, Any] = {"role": "user", "content": summary}
+        summary_msg: dict[str, Any] = {"role": "system", "content": summary}
         return system_msgs + [summary_msg] + selected
 
     return system_msgs + selected

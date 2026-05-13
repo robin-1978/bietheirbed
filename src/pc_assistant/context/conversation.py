@@ -36,8 +36,6 @@ class ConversationManager:
             raise ValueError("System messages must be set via set_system_context(), not add()")
         msg = Message(role=role, content=content, **kwargs)
         self._messages.append(msg)
-        if len(self._messages) > self._max_messages:
-            self._messages = self._messages[-self._max_messages:]
         return msg
 
     def add_user(self, content: str) -> Message:
@@ -92,19 +90,6 @@ class ConversationManager:
                 result.append({"role": msg.role, "content": msg.content})
 
         return result
-
-    def summarize_old_messages(self, keep_recent: int = 10) -> None:
-        if len(self._messages) <= keep_recent:
-            return
-        old_messages = self._messages[:-keep_recent]
-        recent_messages = self._messages[-keep_recent:]
-        summary_parts: list[str] = []
-        for msg in old_messages:
-            snippet = msg.content[:200]
-            summary_parts.append(f"[{msg.role}] {snippet}")
-        summary = "Summary of earlier conversation:\n" + "\n".join(summary_parts)
-        summary_msg = Message(role="user", content=summary)
-        self._messages = [summary_msg] + recent_messages
 
     def estimate_token_count(self) -> int:
         from pc_assistant.context.truncator import _estimate_tokens

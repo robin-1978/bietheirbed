@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from pc_assistant.tools.base import ToolBase
 
+if TYPE_CHECKING:
+    from pc_assistant.harness.safety import SafetyChecker
+
 
 class ToolRegistry:
-    def __init__(self) -> None:
+    def __init__(self, safety: SafetyChecker | None = None) -> None:
         self._tools: dict[str, ToolBase] = {}
+        self._safety = safety
 
     def register(self, tool: ToolBase) -> None:
         if not tool.name:
@@ -38,6 +42,10 @@ class ToolRegistry:
         tool = self._tools.get(name)
         if tool is None:
             raise KeyError(f"Tool '{name}' not found in registry")
+        if self._safety is not None:
+            result = self._safety.check_tool_call(name, kwargs)
+            if not result:
+                return {"error": f"Blocked by safety check: {result.reason}"}
         return await tool.execute(**kwargs)
 
     def __contains__(self, name: str) -> bool:

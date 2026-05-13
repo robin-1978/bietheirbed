@@ -1,8 +1,33 @@
 from __future__ import annotations
 
+import asyncio
+import ipaddress
 from typing import Any
+from urllib.parse import urlparse
 
 from pc_assistant.tools.base import ToolBase
+
+
+def _is_safe_url(url: str) -> tuple[bool, str]:
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False, "Invalid URL"
+    if parsed.scheme not in ("http", "https"):
+        return False, f"Unsupported URL scheme: {parsed.scheme}"
+    hostname = parsed.hostname
+    if not hostname:
+        return False, "No hostname in URL"
+    try:
+        import socket
+        addr_info = socket.getaddrinfo(hostname, None)
+        for family, _, _, _, sockaddr in addr_info:
+            ip = ipaddress.ip_address(sockaddr[0])
+            if ip.is_private or ip.is_loopback or ip.is_reserved:
+                return False, f"Access to private/reserved IP is blocked: {ip}"
+    except Exception:
+        pass
+    return True, ""
 
 
 class WebTool(ToolBase):
@@ -43,6 +68,9 @@ class WebTool(ToolBase):
         url = kwargs.get("url", "")
         if not url:
             return {"error": "No URL provided"}
+        safe, reason = _is_safe_url(url)
+        if not safe:
+            return {"error": f"URL blocked: {reason}"}
         try:
             import httpx
 
@@ -159,26 +187,31 @@ class WebTool(ToolBase):
         has_chinese = any('\u4e00' <= c <= '\u9fff' for c in query)
         region = "cn-zh" if has_chinese else None
 
-        try:
-            from ddgs import DDGS
-
-            with DDGS() as ddgs:
-                kwargs = {"max_results": max_results}
-                if region:
-                    kwargs["region"] = region
-                results = list(ddgs.text(query, **kwargs))
-        except ImportError:
+        def _do_search() -> list[dict[str, Any]] | None:
             try:
-                from duckduckgo_search import DDGS
+                from ddgs import DDGS
 
                 with DDGS() as ddgs:
                     kwargs = {"max_results": max_results}
                     if region:
                         kwargs["region"] = region
-                    results = list(ddgs.text(query, **kwargs))
+                    return list(ddgs.text(query, **kwargs))
             except ImportError:
+                try:
+                    from duckduckgo_search import DDGS
+
+                    with DDGS() as ddgs:
+                        kwargs = {"max_results": max_results}
+                        if region:
+                            kwargs["region"] = region
+                        return list(ddgs.text(query, **kwargs))
+                except ImportError:
+                    return None
+            except Exception:
                 return None
-        except Exception:
+
+        results = await asyncio.to_thread(_do_search)
+        if results is None:
             return None
 
         if not results:
