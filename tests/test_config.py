@@ -10,7 +10,7 @@ class TestAppConfig:
         assert cfg.llm_provider == "llamacpp"
         assert cfg.llm_temperature == 0.7
         assert cfg.max_iterations == 8
-        assert cfg.context_window_budget == 4096
+        assert cfg.context_window_budget == 8192
 
     def test_masked_api_key_empty(self):
         cfg = AppConfig()

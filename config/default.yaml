@@ -8,6 +8,6 @@ llm_timeout: 120
 max_iterations: 8
 max_tokens: 1024
 shell_timeout: 30
-context_window_budget: 4096
+context_window_budget: 8192
 log_file: "logs/pc_assistant.json"
 working_directory: "."

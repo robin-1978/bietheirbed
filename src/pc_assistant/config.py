@@ -21,7 +21,7 @@ class AppConfig(BaseModel):
     max_iterations: int = 8
     max_tokens: int = 1024
     shell_timeout: int = 30
-    context_window_budget: int = 4096
+    context_window_budget: int = 8192
     dangerous_commands: list[str] = Field(default_factory=get_default_dangerous_commands)
     protected_paths: list[str] = Field(default_factory=get_default_protected_paths)
     log_file: str = "logs/pc_assistant.json"

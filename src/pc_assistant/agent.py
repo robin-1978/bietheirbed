@@ -514,6 +514,9 @@ class Agent:
                     try:
                         result = await self._registry.execute(tool_name, **arguments)
                         result_str = str(result)
+                        max_result_chars = 3000
+                        if len(result_str) > max_result_chars:
+                            result_str = result_str[:max_result_chars] + f"\n... [truncated, {len(result_str) - max_result_chars} chars omitted]"
                         self._conversation.add_tool_result(tool_call_id, result_str)
                         self._current_status = "thinking"
                         yield AgentEvent(

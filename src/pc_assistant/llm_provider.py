@@ -327,6 +327,12 @@ class LLMProvider:
                                 delta_tool_calls=delta_tool_calls,
                                 finish_reason="",
                             )
+        except httpx.TimeoutException as e:
+            yield StreamChunk(
+                delta_content=f"LLM request timed out: {e}",
+                delta_tool_calls=[],
+                finish_reason="error",
+            )
         except httpx.HTTPError as e:
             yield StreamChunk(
                 delta_content=f"LLM stream failed: {e}",
@@ -334,8 +340,9 @@ class LLMProvider:
                 finish_reason="error",
             )
         except Exception as e:
+            error_detail = str(e) if str(e) else type(e).__name__
             yield StreamChunk(
-                delta_content=f"LLM stream failed: {e}",
+                delta_content=f"LLM stream failed: {error_detail}",
                 delta_tool_calls=[],
                 finish_reason="error",
             )
