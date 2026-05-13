@@ -516,7 +516,14 @@ class Agent:
                         result_str = str(result)
                         max_result_chars = 3000
                         if len(result_str) > max_result_chars:
-                            result_str = result_str[:max_result_chars] + f"\n... [truncated, {len(result_str) - max_result_chars} chars omitted]"
+                            head_size = max_result_chars * 2 // 3
+                            tail_size = max_result_chars - head_size
+                            omitted = len(result_str) - max_result_chars
+                            result_str = (
+                                result_str[:head_size]
+                                + f"\n\n... [{omitted} chars omitted] ...\n\n"
+                                + result_str[-tail_size:]
+                            )
                         self._conversation.add_tool_result(tool_call_id, result_str)
                         self._current_status = "thinking"
                         yield AgentEvent(
