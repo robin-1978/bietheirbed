@@ -238,7 +238,13 @@ class LLMProvider:
         last_usage: dict[str, Any] = {}
 
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
+            stream_timeout = httpx.Timeout(
+                connect=10.0,
+                read=max(self._timeout * 2, 300.0),
+                write=10.0,
+                pool=10.0,
+            )
+            async with httpx.AsyncClient(timeout=stream_timeout) as client:
                 async with client.stream(
                     "POST",
                     f"{self._server_url}/v1/chat/completions",

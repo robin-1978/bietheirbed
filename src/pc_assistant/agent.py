@@ -27,6 +27,9 @@ from pc_assistant.tools.shell import ShellTool
 from pc_assistant.tools.system import SystemTool
 from pc_assistant.tools.web import WebTool
 from pc_assistant.tools.memory_tool import MemoryTool
+from pc_assistant.tools.weather import WeatherTool
+from pc_assistant.tools.exchange import ExchangeTool
+from pc_assistant.tools.timer import TimerTool
 
 
 class AgentEvent(BaseModel):
@@ -236,6 +239,9 @@ class Agent:
             SystemTool(),
             ClipboardTool(),
             MemoryTool(memory=self._memory),
+            WeatherTool(),
+            ExchangeTool(),
+            TimerTool(),
         ]
         for tool in builtin_tools:
             self._registry.register(tool)
