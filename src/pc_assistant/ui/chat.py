@@ -211,7 +211,7 @@ class ChatUI:
                 f" {connected} {provider} | {model} | ",
                 style="dim",
             ) + Text(current_status, style=f"bold {status_color}") + Text(
-                f" | turns: {turns} | tokens: {token_str} | 🧠 {memory_items}",
+                f" | turns: {turns} | tokens: {token_str} | ◈ {memory_items}",
                 style="dim",
             )
         )
@@ -396,7 +396,7 @@ class ChatUI:
                 self._print("[dim]No memories stored yet. I'll learn your preferences as we chat![/dim]" if self._console else "No memories stored yet.")
                 return True
             if self._console is not None:
-                table = Table(title="🧠 User Memory", show_lines=True)
+                table = Table(title="◈ User Memory", show_lines=True)
                 table.add_column("Category", style="bold", width=12)
                 table.add_column("Key", width=25)
                 table.add_column("Value", width=40)
@@ -474,9 +474,9 @@ class ChatUI:
                     elapsed = time.time() - think_start_time if think_start_time else 0
                     if self._console is not None:
                         self._console.print()
-                        self._console.print(f"[think_label]  🧠 Thought {elapsed:.1f}s[/think_label]")
+                        self._console.print(f"[think_label]  ◈ Thought {elapsed:.1f}s[/think_label]")
                     else:
-                        print(f"\n  🧠 Thought {elapsed:.1f}s")
+                        print(f"\n  ◈ Thought {elapsed:.1f}s")
                     self._think_content = ""
                     think_start_time = None
 
